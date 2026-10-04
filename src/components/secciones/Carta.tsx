@@ -28,6 +28,10 @@ function esExterna(url: string) {
 export default function Carta() {
   const destino = CARTA_URL || INSTAGRAM_URL;
   const textoBoton = CARTA_URL ? "Ver la carta" : "Mirala en Instagram";
+  // Con la carta publicada no se promete nada "para pronto"
+  const textoCarta = CARTA_URL
+    ? "Mirá la carta completa de cada sucursal."
+    : "Muy pronto vas a poder ver la carta de cada sucursal acá. Mientras tanto, la tenés en nuestras historias destacadas.";
   const externa = esExterna(destino);
 
   return (
@@ -84,17 +88,16 @@ export default function Carta() {
                 <span className="block font-display text-2xl leading-tight tracking-wide uppercase md:text-[1.7rem]">
                   {nombre}
                 </span>
-                <span className="a-mano mt-1 block text-2xl text-sol">Próximamente</span>
+                {CARTA_URL ? null : (
+                  <span className="a-mano mt-1 block text-2xl text-sol">Próximamente</span>
+                )}
               </span>
             </li>
           ))}
         </ul>
 
         <div className="mt-14 flex flex-col items-start gap-6 border-t-2 border-dashed border-tiza/25 pt-8 md:flex-row md:items-center md:justify-between">
-          <p className="max-w-xl text-lg text-tiza/90">
-            Muy pronto vas a poder ver la carta de cada sucursal acá. Mientras tanto, la tenés en
-            nuestras historias destacadas.
-          </p>
+          <p className="max-w-xl text-lg text-tiza/90">{textoCarta}</p>
           <a
             href={destino}
             {...(externa ? { target: "_blank", rel: "noopener noreferrer" } : {})}

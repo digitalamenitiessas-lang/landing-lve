@@ -182,7 +182,7 @@ export function PanelSucursal({ sucursal, nombre, direccion, apodo, inicial }: P
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
           <Interruptor
             etiqueta="Venta web habilitada"
-            ayuda="Apagada: la landing no deja pedir en esta sucursal."
+            ayuda="Apagada: la landing muestra «La venta web está pausada» y no deja pedir."
             activo={config.venta_habilitada}
             deshabilitado={ocupado !== null}
             onCambiar={(v) =>
@@ -195,7 +195,7 @@ export function PanelSucursal({ sucursal, nombre, direccion, apodo, inicial }: P
           />
           <Interruptor
             etiqueta="Café disponible"
-            ayuda="Apagado: el 1/4 kg figura sin stock."
+            ayuda="Apagado: la landing muestra «Agotado en esta sucursal»."
             activo={config.disponible}
             deshabilitado={ocupado !== null}
             onCambiar={(v) =>

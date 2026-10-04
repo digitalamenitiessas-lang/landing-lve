@@ -20,7 +20,8 @@ SALA_REPO=/c/repos/sala-de-profes-24 bash correr_pruebas.sh
    (igual que `scripts/run-migration.mjs`).
 4. Corre `prueba_tienda_web.sql`: casos de negocio y de permisos con `ASSERT`.
 5. Corre `prueba_concurrencia.sh`: dos requests con la misma clave al mismo tiempo, con
-   la función real y con una copia sin candados (para probar el `unique_violation`).
+   la función real y con una copia sin candados (para probar el `unique_violation`), y la
+   misma clave con otro teléfono (no es un reintento: `datos_invalidos` y el token no cambia).
 6. Aplica el reloj de pg_cron dos veces, el rollback dos veces y vuelve a aplicar la migración.
 7. Borra el contenedor, también si algo falla.
 

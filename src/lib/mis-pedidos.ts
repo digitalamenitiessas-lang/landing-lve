@@ -194,11 +194,30 @@ export function borrarTodosLosPedidos(): void {
   escribir([]);
 }
 
-/** Pendiente de pago o pagado (todavía no retirado) y hecho hace menos de 7 días. */
+/**
+ * Pendiente de pago (y sin vencer) o pagado (todavía no retirado), y hecho hace
+ * menos de 7 días.
+ */
 export function esPedidoActivo(p: PedidoGuardado, ahora: number = Date.now()): boolean {
   if (p.estado !== "pendiente_pago" && p.estado !== "pagado") return false;
+  // Un pendiente cuya reserva ya venció no está activo, aunque la copia diga
+  // "pendiente_pago" (la sucursal lo cancela recién cuando alguien lo consulta).
+  if (p.estado === "pendiente_pago" && pendienteVencido(p.venta, ahora)) return false;
   const creado = fecha(p.creado_at) || fecha(p.actualizado_at);
   return ahora - creado < DIAS_PEDIDO_ACTIVO * 24 * 60 * 60 * 1000;
+}
+
+/**
+ * Una venta pendiente_pago cuya reserva (vence_at) ya pasó. Sin copia o con una
+ * fecha ilegible, false (no sabemos).
+ */
+export function pendienteVencido(
+  venta: Pick<VentaPublica, "estado" | "vence_at"> | undefined,
+  ahora: number = Date.now(),
+): boolean {
+  if (!venta || venta.estado !== "pendiente_pago") return false;
+  const vence = Date.parse(venta.vence_at);
+  return !Number.isNaN(vence) && vence <= ahora;
 }
 
 /** El pedido activo más reciente (para el chip), o null. */

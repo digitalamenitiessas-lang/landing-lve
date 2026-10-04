@@ -21,7 +21,7 @@ type Props = {
   /** Subtítulo del encabezado: "Sucursal Santa Fe 746" */
   subtitulo?: ReactNode;
   className?: string;
-  /** Pedido cancelado: lo marcado con .atenuable se ve gris y apagado. */
+  /** Pedido cancelado: lo marcado con .atenuable se ve gris (sin bajar el contraste de AA). */
   atenuada?: boolean;
   /** aria-label del <article>. */
   etiqueta?: string;
@@ -58,7 +58,9 @@ export default function HojaCuaderno({
       <div
         className={clsx(
           "pt-4 pr-4 pb-8 pl-[calc(var(--margen)+0.85rem)] sm:pr-8",
-          atenuada && "[&_.atenuable]:opacity-60 [&_.atenuable]:grayscale",
+          // Atenuado leve: con opacity-90, tinta-suave queda ~5,7:1 sobre papel-claro (AA).
+          // Más bajo (0,6) dejaba fechas y detalles en ~2,8:1. El estado lo dicen el sello y el título.
+          atenuada && "[&_.atenuable]:opacity-90 [&_.atenuable]:grayscale",
         )}
       >
         <header className="flex items-start justify-between gap-3 border-b-2 border-double border-rojo/40 pb-2">

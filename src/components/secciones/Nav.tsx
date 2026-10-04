@@ -113,7 +113,8 @@ export default function Nav() {
         "fixed inset-x-0 top-0 z-50 transition-[background-color,box-shadow,color] duration-300",
         solido
           ? "border-b border-tinta/10 bg-papel/90 text-tinta shadow-[0_8px_24px_-14px_rgb(30_26_21/0.5)] backdrop-blur-md"
-          : "bg-gradient-to-b from-pizarra-noche/45 to-transparent text-tiza",
+          : // sobre-oscuro: foco ámbar (globals.css), el de tinta no se ve sobre el pizarrón
+            "sobre-oscuro bg-gradient-to-b from-pizarra-noche/45 to-transparent text-tiza",
       )}
     >
       <nav
@@ -166,7 +167,7 @@ export default function Nav() {
           ))}
         </ul>
 
-        <div className="ml-auto flex items-center gap-1 sm:gap-2">
+        <div className="ml-auto flex min-w-0 items-center gap-1 sm:gap-2">
           <a
             href={INSTAGRAM_URL}
             target="_blank"
@@ -193,19 +194,19 @@ export default function Nav() {
             aria-controls={idPanel}
             aria-label={abierto ? "Cerrar menú" : "Abrir menú"}
             onClick={() => setAbierto((a) => !a)}
-            className="inline-flex size-11 items-center justify-center rounded-full transition-colors hover:bg-current/10 md:hidden"
+            className="inline-flex size-11 shrink-0 items-center justify-center rounded-full transition-colors hover:bg-current/10 md:hidden"
           >
             {abierto ? <X className="size-6" aria-hidden /> : <Menu className="size-6" aria-hidden />}
           </button>
         </div>
       </nav>
 
-      {/* Panel mobile */}
+      {/* Panel mobile: con poca altura (landscape, zoom 400%) scrollea adentro; el header es fijo */}
       <div
         ref={panelRef}
         id={idPanel}
         hidden={!abierto}
-        className="papel absolute inset-x-0 top-full border-b border-tinta/15 text-tinta shadow-[0_18px_30px_-18px_rgb(30_26_21/0.55)] md:hidden"
+        className="papel absolute inset-x-0 top-full max-h-[calc(100dvh-4rem)] overflow-y-auto overscroll-contain border-b border-tinta/15 text-tinta shadow-[0_18px_30px_-18px_rgb(30_26_21/0.55)] md:hidden"
       >
         <ul className="mx-auto flex max-w-6xl flex-col px-4 pt-2 pb-4">
           {LINKS.map((l) => (

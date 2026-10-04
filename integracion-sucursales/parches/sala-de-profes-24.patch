@@ -1,4 +1,4 @@
-From 3d257dcefc545f87a2bc356b1fef749e7a13b846 Mon Sep 17 00:00:00 2001
+From 093adf3c19c8f6461001f9360811cea11dacd2b5 Mon Sep 17 00:00:00 2001
 From: luciano bonilla <lucianobonilla27@gmail.com>
 Date: Sun, 4 Oct 2026 12:41:52 -0300
 Subject: [PATCH] =?UTF-8?q?feat(tienda):=20venta=20de=20caf=C3=A9=20desde?=
@@ -24,6 +24,14 @@ sistema de la sucursal donde se compró. Esto agrega:
 - Push nuevo 'tienda_venta_nueva', módulo de auditoría 'tienda' y
   entrada "Tienda web" en el menú.
 
+Seguridad y operación:
+- Las rutas del equipo exigen perfil activo (requireRolActivo).
+- Una venta vencida se puede pasar a pagado si el comprobante llegó tarde
+  (Cancelados → "Marcar pagado (llegó el comprobante)").
+- La repetición con la misma idempotency_key exige el mismo teléfono, y el
+  equipo no lee token_hash ni idempotency_key (grant por columnas).
+- Un producto con opciones mal cargadas a mano sale como no disponible.
+
 Variables nuevas: TIENDA_API_SECRET y TIENDA_PREFIJO_CODIGO.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
@@ -31,29 +39,29 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  .env.example                                  |   8 +
  src/app/(app)/auditoria/page.tsx              |   3 +-
  .../tienda/_components/AjustesTienda.tsx      | 387 +++++++++++++
- .../(app)/tienda/_components/VentaCard.tsx    | 276 +++++++++
+ .../(app)/tienda/_components/VentaCard.tsx    | 290 +++++++++
  src/app/(app)/tienda/_components/formato.ts   |  74 +++
  src/app/(app)/tienda/_components/use-ahora.ts |  16 +
- src/app/(app)/tienda/page.tsx                 | 220 ++++++++
- src/app/api/tienda/config/route.ts            | 124 +++++
- src/app/api/tienda/publico/catalogo/route.ts  |  42 ++
+ src/app/(app)/tienda/page.tsx                 | 220 +++++++
+ src/app/api/tienda/config/route.ts            | 123 ++++
+ src/app/api/tienda/publico/catalogo/route.ts  |  43 ++
  .../tienda/publico/ventas/[codigo]/route.ts   |  58 ++
  src/app/api/tienda/publico/ventas/route.ts    |  81 +++
- src/app/api/tienda/ventas/[id]/route.ts       | 151 +++++
+ src/app/api/tienda/ventas/[id]/route.ts       | 161 +++++
  src/app/api/tienda/ventas/route.ts            |  75 +++
  src/components/layout/BottomNav.tsx           |   4 +
  src/components/layout/TopBar.tsx              |   1 +
  src/lib/audit.ts                              |   2 +-
  src/lib/push/notify-event.ts                  |   7 +
- src/lib/tienda/auth.ts                        |  75 +++
- src/lib/tienda/config.ts                      | 408 ++++++++++++++
+ src/lib/tienda/auth.ts                        | 108 ++++
+ src/lib/tienda/config.ts                      | 429 ++++++++++++++
  src/lib/tienda/db.ts                          |  30 +
  src/lib/tienda/respuestas.ts                  |  52 ++
- src/lib/tienda/tipos.ts                       | 342 ++++++++++++
- src/lib/tienda/validar.ts                     | 160 ++++++
+ src/lib/tienda/tipos.ts                       | 342 +++++++++++
+ src/lib/tienda/validar.ts                     | 160 +++++
  src/lib/tienda/ventas.ts                      | 213 +++++++
- supabase/migrations/20261004_tienda_web.sql   | 523 ++++++++++++++++++
- 25 files changed, 3330 insertions(+), 2 deletions(-)
+ supabase/migrations/20261004_tienda_web.sql   | 548 ++++++++++++++++++
+ 25 files changed, 3433 insertions(+), 2 deletions(-)
  create mode 100644 src/app/(app)/tienda/_components/AjustesTienda.tsx
  create mode 100644 src/app/(app)/tienda/_components/VentaCard.tsx
  create mode 100644 src/app/(app)/tienda/_components/formato.ts
@@ -506,10 +514,10 @@ index 0000000..85cff00
 +}
 diff --git a/src/app/(app)/tienda/_components/VentaCard.tsx b/src/app/(app)/tienda/_components/VentaCard.tsx
 new file mode 100644
-index 0000000..b4a4433
+index 0000000..522c1e9
 --- /dev/null
 +++ b/src/app/(app)/tienda/_components/VentaCard.tsx
-@@ -0,0 +1,276 @@
+@@ -0,0 +1,290 @@
 +'use client'
 +
 +import { useState } from 'react'
@@ -553,6 +561,9 @@ index 0000000..b4a4433
 +  const pendiente = venta.estado === 'pendiente_pago'
 +  const vencePronto = pendiente && venceMs < SEIS_HORAS
 +  const motivoObligatorio = confirmando === 'cancelado' && venta.estado === 'pagado'
++  // Cancelada sola por vencimiento: si el cliente había transferido a tiempo y el
++  // comprobante se vio tarde, un encargado o un socio todavía la puede cobrar.
++  const vencida = venta.estado === 'cancelado' && venta.motivo_cancelacion === 'vencido'
 +
 +  async function confirmar() {
 +    if (!confirmando) return
@@ -572,7 +583,9 @@ index 0000000..b4a4433
 +  }
 +
 +  const pregunta: Record<AccionVenta, string> = {
-+    pagado: `¿Llegó el comprobante por el monto exacto (${fmtPesos(venta.total)})?`,
++    pagado: vencida
++      ? `Este pedido venció el ${fmtFechaHora(venta.vence_at)}. ¿Llegó el comprobante por el monto exacto (${fmtPesos(venta.total)})? Vuelve a "Para entregar" y el cliente lo ve pagado en su ticket.`
++      : `¿Llegó el comprobante por el monto exacto (${fmtPesos(venta.total)})?`,
 +    retirado: `¿Le entregaste ${bolsas === 1 ? 'la bolsa' : `las ${bolsas} bolsas`} a ${venta.cliente_nombre}? Pedile el código ${venta.codigo}.`,
 +    cancelado:
 +      venta.estado === 'pagado'
@@ -777,6 +790,15 @@ index 0000000..b4a4433
 +              </button>
 +            )}
 +          </div>
++        ) : vencida && esManager ? (
++          <button
++            type="button"
++            onClick={() => abrir('pagado')}
++            className="flex h-11 w-full items-center justify-center gap-1.5 rounded-xl px-3 text-xs font-semibold text-[#006d5a] ring-1 ring-[#006d5a]/30 active:scale-95"
++          >
++            <Check className="size-3.5" aria-hidden />
++            Marcar pagado (llegó el comprobante)
++          </button>
 +        ) : (
 +          <p className="text-[11px] text-[#a39e97]">
 +            {venta.estado === 'retirado' ? 'Venta cerrada.' : 'Venta cancelada.'}
@@ -1116,14 +1138,13 @@ index 0000000..fa4d9de
 +}
 diff --git a/src/app/api/tienda/config/route.ts b/src/app/api/tienda/config/route.ts
 new file mode 100644
-index 0000000..ae9d690
+index 0000000..4ebe7dd
 --- /dev/null
 +++ b/src/app/api/tienda/config/route.ts
-@@ -0,0 +1,124 @@
+@@ -0,0 +1,123 @@
 +import { NextResponse } from 'next/server'
 +import { logAudit } from '@/lib/audit'
-+import { requireRole } from '@/lib/supabase/require-role'
-+import { tiendaSecretoConfigurado } from '@/lib/tienda/auth'
++import { requireRolActivo, tiendaSecretoConfigurado } from '@/lib/tienda/auth'
 +import {
 +  aplicarPatchConfig,
 +  aProductoStaff,
@@ -1169,7 +1190,7 @@ index 0000000..ae9d690
 +}
 +
 +export async function GET() {
-+  const auth = await requireRole(ROLES)
++  const auth = await requireRolActivo(ROLES)
 +  if (auth.response) return auth.response
 +  try {
 +    return NextResponse.json(await armarRespuesta(tiendaAdmin()), { headers: { 'Cache-Control': 'no-store' } })
@@ -1179,7 +1200,7 @@ index 0000000..ae9d690
 +}
 +
 +export async function PATCH(request: Request) {
-+  const auth = await requireRole(ROLES)
++  const auth = await requireRolActivo(ROLES)
 +  if (auth.response) return auth.response
 +  const { user } = auth
 +
@@ -1246,10 +1267,10 @@ index 0000000..ae9d690
 +}
 diff --git a/src/app/api/tienda/publico/catalogo/route.ts b/src/app/api/tienda/publico/catalogo/route.ts
 new file mode 100644
-index 0000000..ec67205
+index 0000000..63cfca1
 --- /dev/null
 +++ b/src/app/api/tienda/publico/catalogo/route.ts
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,43 @@
 +import { protegerRutaPublica } from '@/lib/tienda/auth'
 +import { aProductoPublico, leerConfig, leerProductos } from '@/lib/tienda/config'
 +import { faltaMigracion, tiendaAdmin } from '@/lib/tienda/db'
@@ -1261,7 +1282,8 @@ index 0000000..ec67205
 +// ---------------------------------------------------------------------------
 +// Productos (ordenados por `orden`) + configuración de la tienda de esta
 +// sucursal. Protegida con Authorization: Bearer <TIENDA_API_SECRET>.
-+// Un producto sin precio cargado sale como no disponible.
++// Un producto sin precio cargado, o con opciones mal cargadas a mano (ver
++// opcionesCrudasValidas), sale como no disponible.
 +// ---------------------------------------------------------------------------
 +
 +export const dynamic = 'force-dynamic'
@@ -1445,14 +1467,14 @@ index 0000000..eacecbf
 +}
 diff --git a/src/app/api/tienda/ventas/[id]/route.ts b/src/app/api/tienda/ventas/[id]/route.ts
 new file mode 100644
-index 0000000..804dd92
+index 0000000..f317e53
 --- /dev/null
 +++ b/src/app/api/tienda/ventas/[id]/route.ts
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,161 @@
 +import { NextResponse } from 'next/server'
 +import { logAudit } from '@/lib/audit'
 +import { isManagerOrAbove } from '@/lib/roles'
-+import { requireRole } from '@/lib/supabase/require-role'
++import { requireRolActivo } from '@/lib/tienda/auth'
 +import { faltaMigracion, MENSAJE_FALTA_MIGRACION, tiendaAdmin } from '@/lib/tienda/db'
 +import { detalleError } from '@/lib/tienda/respuestas'
 +import type { EstadoVenta, TiendaVentaRow } from '@/lib/tienda/tipos'
@@ -1467,7 +1489,12 @@ index 0000000..804dd92
 +//   pendiente_pago → cancelado
 +//   pagado         → retirado    (el cliente se la llevó)
 +//   pagado         → cancelado   (con motivo: hay que devolver la plata)
++//   cancelado      → pagado      (SOLO si se canceló por vencida: el cliente
++//                                 pagó a tiempo pero el comprobante se vio tarde)
 +// 'pagado' y 'cancelado': socio o encargado. 'retirado': también barista.
++// Al pasar una vencida a 'pagado' se limpian cancelado_at/_por y el motivo,
++// para que el ticket y /tienda la vean como una pagada más; lo que tenía queda
++// en la auditoría (metadata.vencida y metadata.cancelado_at).
 +// El update va condicionado al estado anterior: si otro lo movió en el medio,
 +// responde 409 y no pisa nada.
 +// ---------------------------------------------------------------------------
@@ -1480,7 +1507,7 @@ index 0000000..804dd92
 +  pendiente_pago: ['pagado', 'cancelado'],
 +  pagado: ['retirado', 'cancelado'],
 +  retirado: [],
-+  cancelado: [],
++  cancelado: ['pagado'], // solo las vencidas: ver abajo
 +}
 +
 +const ETIQUETA: Record<EstadoVenta, string> = {
@@ -1495,7 +1522,7 @@ index 0000000..804dd92
 +}
 +
 +export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
-+  const auth = await requireRole(['socio', 'encargado', 'barista'])
++  const auth = await requireRolActivo(['socio', 'encargado', 'barista'])
 +  if (auth.response) return auth.response
 +  const { user } = auth
 +
@@ -1533,7 +1560,8 @@ index 0000000..804dd92
 +    if (!actualData) return NextResponse.json({ error: 'Venta no encontrada' }, { status: 404 })
 +    const actual = actualData as unknown as TiendaVentaRow
 +
-+    if (!TRANSICIONES[actual.estado].includes(destino)) {
++    const vencida = actual.estado === 'cancelado' && actual.motivo_cancelacion === 'vencido'
++    if (!TRANSICIONES[actual.estado].includes(destino) || (actual.estado === 'cancelado' && !vencida)) {
 +      return NextResponse.json(
 +        { error: `La venta ${actual.codigo} ya está ${ETIQUETA[actual.estado]}: no se puede marcar como ${ETIQUETA[destino]}.` },
 +        { status: 409 },
@@ -1549,18 +1577,19 @@ index 0000000..804dd92
 +    const ahora = new Date().toISOString()
 +    const cambios: Record<string, unknown> = { estado: destino }
 +    if (destino === 'pagado') Object.assign(cambios, { pagado_at: ahora, pagado_por: user.id })
++    if (vencida) Object.assign(cambios, { cancelado_at: null, cancelado_por: null, motivo_cancelacion: null })
 +    if (destino === 'retirado') Object.assign(cambios, { retirado_at: ahora, retirado_por: user.id })
 +    if (destino === 'cancelado') {
 +      Object.assign(cambios, { cancelado_at: ahora, cancelado_por: user.id, motivo_cancelacion: motivo })
 +    }
 +
-+    const { data: movida, error: updErr } = await admin
++    let upd = admin
 +      .from('tienda_ventas')
 +      .update(cambios)
 +      .eq('id', id)
 +      .eq('estado', actual.estado) // nadie la movió mientras tanto
-+      .select('id')
-+      .maybeSingle()
++    if (vencida) upd = upd.eq('motivo_cancelacion', 'vencido')
++    const { data: movida, error: updErr } = await upd.select('id').maybeSingle()
 +    if (updErr) throw updErr
 +    if (!movida) {
 +      return NextResponse.json(
@@ -1584,8 +1613,11 @@ index 0000000..804dd92
 +      module: 'tienda',
 +      entityType: 'tienda_venta',
 +      entityId: id,
-+      description: `Venta web ${actual.codigo} (${pesos(total)}) marcada como ${ETIQUETA[destino]}${motivo ? `: ${motivo}` : ''}`,
-+      metadata: { codigo: actual.codigo, de: actual.estado, a: destino, total, motivo },
++      description: `Venta web ${actual.codigo} (${pesos(total)}) marcada como ${ETIQUETA[destino]}${vencida ? ' (había vencido sin pago; llegó el comprobante)' : ''}${motivo ? `: ${motivo}` : ''}`,
++      metadata: {
++        codigo: actual.codigo, de: actual.estado, a: destino, total, motivo,
++        ...(vencida ? { vencida: true, cancelado_at: actual.cancelado_at, vence_at: actual.vence_at } : {}),
++      },
 +    })
 +
 +    if (!cargada) return NextResponse.json({ ok: true })
@@ -1602,12 +1634,12 @@ index 0000000..804dd92
 +}
 diff --git a/src/app/api/tienda/ventas/route.ts b/src/app/api/tienda/ventas/route.ts
 new file mode 100644
-index 0000000..2e15af8
+index 0000000..ac9da2f
 --- /dev/null
 +++ b/src/app/api/tienda/ventas/route.ts
 @@ -0,0 +1,75 @@
 +import { NextResponse } from 'next/server'
-+import { requireRole } from '@/lib/supabase/require-role'
++import { requireRolActivo } from '@/lib/tienda/auth'
 +import { faltaMigracion, MENSAJE_FALTA_MIGRACION, tiendaAdmin } from '@/lib/tienda/db'
 +import { detalleError } from '@/lib/tienda/respuestas'
 +import {
@@ -1633,7 +1665,7 @@ index 0000000..2e15af8
 +const LIMITE = 200
 +
 +export async function GET(request: Request) {
-+  const auth = await requireRole(['socio', 'encargado', 'barista'])
++  const auth = await requireRolActivo(['socio', 'encargado', 'barista'])
 +  if (auth.response) return auth.response
 +
 +  const estadoParam = new URL(request.url).searchParams.get('estado')
@@ -1762,12 +1794,13 @@ index cdcfc71..77ea84a 100644
  export type NotificationEventKey = keyof typeof DEFAULT_NOTIFICATION_EVENTS
 diff --git a/src/lib/tienda/auth.ts b/src/lib/tienda/auth.ts
 new file mode 100644
-index 0000000..e274fa3
+index 0000000..e2a0567
 --- /dev/null
 +++ b/src/lib/tienda/auth.ts
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,108 @@
 +import { createHash, timingSafeEqual } from 'node:crypto'
-+import type { NextResponse } from 'next/server'
++import { NextResponse } from 'next/server'
++import { createClient } from '@/lib/supabase/server'
 +import { errorPublico } from './respuestas'
 +import { CONTRATO_VERSION, type ErrorRespuesta } from './tipos'
 +
@@ -1841,12 +1874,44 @@ index 0000000..e274fa3
 +export function protegerRutaPublica(request: Request): NextResponse<ErrorRespuesta> | null {
 +  return verificarSecreto(request) ?? verificarVersion(request)
 +}
++
++// ---------------------------------------------------------------------------
++// Autenticación de las rutas del equipo (/api/tienda/config, /api/tienda/ventas*)
++// ---------------------------------------------------------------------------
++// Igual que requireRole (@/lib/supabase/require-role), pero además exige
++// profiles.is_active. requireRole no lo mira y el middleware deja pasar /api/*
++// sin el chequeo de inactivos; como estas rutas usan service_role (se saltean
++// la RLS, que sí exige is_active), sin esto alguien dado de baja en /equipo
++// que vuelva a iniciar sesión podría cambiar el alias/CBU, marcar ventas o leer
++// los datos de los clientes.
++// ---------------------------------------------------------------------------
++
++export async function requireRolActivo(allowedRoles: readonly string[]): Promise<
++  | { user: { id: string; role: string }; response?: undefined }
++  | { user?: undefined; response: NextResponse }
++> {
++  const supabase = await createClient()
++  const { data: { user } } = await supabase.auth.getUser()
++  if (!user) {
++    return { response: NextResponse.json({ success: false, error: 'No autenticado' }, { status: 401 }) }
++  }
++
++  const { data: profile } = await supabase.from('profiles').select('role, is_active').eq('id', user.id).single()
++  if (!profile || profile.is_active !== true) {
++    return { response: NextResponse.json({ success: false, error: 'Cuenta desactivada' }, { status: 403 }) }
++  }
++  if (!allowedRoles.includes(profile.role)) {
++    return { response: NextResponse.json({ success: false, error: 'Sin permisos' }, { status: 403 }) }
++  }
++
++  return { user: { id: user.id, role: profile.role } }
++}
 diff --git a/src/lib/tienda/config.ts b/src/lib/tienda/config.ts
 new file mode 100644
-index 0000000..970360d
+index 0000000..b7d84c8
 --- /dev/null
 +++ b/src/lib/tienda/config.ts
-@@ -0,0 +1,408 @@
+@@ -0,0 +1,429 @@
 +import type { TiendaDb } from './db'
 +import type {
 +  ConfigPatchBody,
@@ -1972,11 +2037,32 @@ index 0000000..970360d
 +  return out
 +}
 +
++/**
++ * true si normalizarOpciones no tiene que descartar ni recortar nada. tienda_crear_venta
++ * valida contra el JSON crudo (ids exactos, todas las requeridas): si el catálogo
++ * publicara la versión "limpia" de unas opciones mal cargadas, la landing mandaría
++ * ids que la base rechaza (o no mostraría una requerida) y nadie podría comprar
++ * ese producto. En ese caso el producto se publica como no disponible.
++ */
++export function opcionesCrudasValidas(v: unknown): boolean {
++  if (!Array.isArray(v)) return false
++  const exacto = (x: unknown, max: number) => typeof x === 'string' && texto(x, max) === x
++  return v.every(
++    (o) =>
++      esObjeto(o) &&
++      exacto(o.id, 60) &&
++      texto(o.nombre, 80) !== null &&
++      Array.isArray(o.valores) &&
++      o.valores.length > 0 &&
++      o.valores.every((x) => esObjeto(x) && exacto(x.id, 60) && texto(x.nombre, 120) !== null),
++  )
++}
++
 +function maxPorPedido(v: unknown): number {
 +  return typeof v === 'number' && Number.isInteger(v) && v >= 1 ? Math.min(v, 20) : 1
 +}
 +
-+/** Producto para la landing: sin precio cargado no está disponible. */
++/** Producto para la landing: sin precio cargado (o con opciones mal cargadas) no está disponible. */
 +export function aProductoPublico(row: TiendaProductoRow): Producto {
 +  const precio = Number(row.precio)
 +  const precioOk = Number.isFinite(precio) && precio > 0
@@ -1987,7 +2073,7 @@ index 0000000..970360d
 +    descripcion: row.descripcion,
 +    presentacion: row.presentacion,
 +    precio: precioOk ? precio : 0,
-+    disponible: Boolean(row.disponible) && precioOk,
++    disponible: Boolean(row.disponible) && precioOk && opcionesCrudasValidas(row.opciones),
 +    opciones: normalizarOpciones(row.opciones),
 +    max_por_pedido: maxPorPedido(row.max_por_pedido),
 +  }
@@ -3084,10 +3170,10 @@ index 0000000..7c1712f
 +}
 diff --git a/supabase/migrations/20261004_tienda_web.sql b/supabase/migrations/20261004_tienda_web.sql
 new file mode 100644
-index 0000000..c877090
+index 0000000..ffa44c7
 --- /dev/null
 +++ b/supabase/migrations/20261004_tienda_web.sql
-@@ -0,0 +1,523 @@
+@@ -0,0 +1,548 @@
 +-- ---------------------------------------------------------------------------
 +-- Tienda web: venta de café (1/4 kg) desde la landing de La Vieja Escuela
 +-- ---------------------------------------------------------------------------
@@ -3104,6 +3190,8 @@ index 0000000..c877090
 +--   RLS sin políticas de escritura; socio, encargado y barista pueden leer.
 +--   Las funciones son SECURITY DEFINER y solo las ejecuta service_role.
 +-- Seguridad: el token del ticket nunca se guarda, solo su sha-256 (hex).
++--   Ni el hash ni la idempotency_key se le muestran al equipo (grant por columnas),
++--   y repetir una idempotency_key solo devuelve la venta si coincide el teléfono.
 +--   El precio y el total salen siempre de esta base, nunca de la landing.
 +-- Arranca APAGADA: venta_habilitada = false y el café sin precio ni stock.
 +-- Es la misma migración para Santa Fe 746 y para la 24. Se puede correr
@@ -3221,8 +3309,15 @@ index 0000000..c877090
 +                 where p.id = auth.uid() and p.is_active and p.role in ('socio', 'encargado', 'barista')));
 +
 +-- Los permisos automáticos de Supabase dan ALL a anon y authenticated: se cierran.
++-- (revoke all on table también saca los permisos por columna de una corrida anterior)
 +revoke all on table public.tienda_productos, public.tienda_ventas, public.tienda_venta_items from anon, authenticated;
-+grant select on table public.tienda_productos, public.tienda_ventas, public.tienda_venta_items to authenticated;
++grant select on table public.tienda_productos, public.tienda_venta_items to authenticated;
++-- tienda_ventas: todo menos token_hash e idempotency_key. Con la clave se le puede
++-- pedir a tienda_crear_venta un token nuevo del ticket, así que no se muestra.
++grant select (id, numero, codigo, estado, cliente_nombre, cliente_telefono, cliente_email, nota, total,
++              origen, vence_at, pagado_at, pagado_por, retirado_at, retirado_por, cancelado_at,
++              cancelado_por, motivo_cancelacion, created_at, updated_at)
++  on table public.tienda_ventas to authenticated;
 +grant all on table public.tienda_productos, public.tienda_ventas, public.tienda_venta_items to service_role;
 +revoke all on sequence public.tienda_ventas_numero_seq from anon, authenticated;
 +grant usage, select on sequence public.tienda_ventas_numero_seq to service_role;
@@ -3324,6 +3419,9 @@ index 0000000..c877090
 +
 +  -- 1. Repetición: misma idempotency_key → misma venta, con el token nuevo.
 +  --    El candado serializa dos pedidos iguales que llegan a la vez.
++  --    Solo si coincide el teléfono (últimos 10 dígitos): la landing estrena
++  --    clave cuando cambian los datos, así que otro teléfono con la misma clave
++  --    no es un reintento y no se le entrega (ni se le rota) el token del ticket.
 +  if jsonb_typeof(p_venta->'idempotency_key') is distinct from 'string'
 +     or (p_venta->>'idempotency_key') !~ v_uuid_re then
 +    return jsonb_build_object('ok', false, 'codigo', 'datos_invalidos',
@@ -3332,11 +3430,18 @@ index 0000000..c877090
 +  v_key := (p_venta->>'idempotency_key')::uuid;
 +  perform pg_advisory_xact_lock(hashtextextended('tienda_web:idem:' || v_key::text, 0));
 +
++  v_tel10 := right(regexp_replace(coalesce(p_venta->'cliente'->>'telefono', ''), '\D', '', 'g'), 10);
 +  update public.tienda_ventas set token_hash = p_token_hash
 +   where idempotency_key = v_key
++     and right(regexp_replace(cliente_telefono, '\D', '', 'g'), 10) = v_tel10
 +  returning id, codigo into v_venta_id, v_codigo;
 +  if found then
 +    return jsonb_build_object('ok', true, 'repetida', true, 'venta_id', v_venta_id, 'codigo', v_codigo);
++  end if;
++  if exists (select 1 from public.tienda_ventas where idempotency_key = v_key) then
++    return jsonb_build_object('ok', false, 'codigo', 'datos_invalidos',
++      'error', 'Este pedido ya se había hecho con otros datos. Recargá la página y volvé a hacerlo.',
++      'campo', 'idempotency_key');
 +  end if;
 +
 +  -- 2. Interruptor de la sucursal
@@ -3564,8 +3669,14 @@ index 0000000..c877090
 +    end if;
 +    update public.tienda_ventas set token_hash = p_token_hash
 +     where idempotency_key = v_key
++       and right(regexp_replace(cliente_telefono, '\D', '', 'g'), 10) = v_tel10
 +    returning id, codigo into v_venta_id, v_codigo;
 +    if not found then
++      if exists (select 1 from public.tienda_ventas where idempotency_key = v_key) then
++        return jsonb_build_object('ok', false, 'codigo', 'datos_invalidos',
++          'error', 'Este pedido ya se había hecho con otros datos. Recargá la página y volvé a hacerlo.',
++          'campo', 'idempotency_key');
++      end if;
 +      raise;
 +    end if;
 +    return jsonb_build_object('ok', true, 'repetida', true, 'venta_id', v_venta_id, 'codigo', v_codigo);

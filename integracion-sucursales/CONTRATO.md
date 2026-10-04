@@ -125,8 +125,8 @@ curl -s https://sala-de-profes-24.vercel.app/api/tienda/publico/catalogo \
 | Campo | Regla |
 |---|---|
 | `venta_habilitada` | Interruptor general de la sucursal. Con `false`, la landing muestra el café pero no deja comprar, y el POST responde `409 venta_deshabilitada`. Desde la app no se puede activar sin alias o CBU y sin WhatsApp. |
-| `productos[].disponible` | Es `false` si el producto está apagado **o no tiene precio** (`precio <= 0`). En ese caso sale `precio: 0`. |
-| `productos[].opciones` | Se descartan las opciones mal armadas (sin `id`, sin `nombre` o sin `valores`), para que la landing no rechace el catálogo entero. |
+| `productos[].disponible` | Es `false` si el producto está apagado, **no tiene precio** (`precio <= 0`; en ese caso sale `precio: 0`) **o tiene opciones mal cargadas** (ver la fila siguiente). |
+| `productos[].opciones` | Se descartan las opciones mal armadas (sin `id`, sin `nombre` o sin `valores`), para que la landing no rechace el catálogo entero. Si hubo que descartar o recortar algo (también un `id` de opción o de valor con espacios de más o de más de 60 caracteres), el producto sale con `disponible: false`: `tienda_crear_venta` valida contra lo guardado y rechazaría lo que mande la landing. |
 | `whatsapp` | Solo dígitos, de 10 a 15, con formato internacional (`549381…`), o `null`. |
 | `vencimiento_horas` | Entero de 1 a 720. Si lo guardado es inválido, vale 48. |
 
@@ -240,7 +240,7 @@ Todo error tiene la forma:
 | `codigo` | HTTP | Cuándo |
 |---|---|---|
 | `no_autorizado` | 401 | Falta el secreto o no coincide. |
-| `datos_invalidos` | 400 | El body está mal formado o algún dato no cumple las reglas. `campo` dice cuál. También se usa para un `X-Contrato-Version` distinto de 1. |
+| `datos_invalidos` | 400 | El body está mal formado o algún dato no cumple las reglas. `campo` dice cuál. También se usa para un `X-Contrato-Version` distinto de 1 y para una `idempotency_key` repetida con otro teléfono (`campo: idempotency_key`). |
 | `opcion_invalida` | 400 | Falta una opción requerida, o una opción o valor no existe. |
 | `venta_deshabilitada` | 409 | La sucursal pausó la venta web. |
 | `producto_no_disponible` | 409 | El producto no existe, está sin stock o no tiene precio. |
@@ -249,7 +249,13 @@ Todo error tiene la forma:
 | `error_interno` | 500 | Falla de la sucursal: base caída, migración sin aplicar, etc. |
 | `error_interno` | 503 | `TIENDA_API_SECRET` no configurado en la sucursal. |
 
-La landing muestra el `error` de los 4xx tal cual. Ante un 5xx, un 401 o una respuesta fuera de contrato, muestra un mensaje genérico de "sucursal no disponible".
+Qué hace la landing con cada error:
+
+- **El servidor de la landing** reenvía al navegador `codigo`, `error` y `campo` tal como los mandó la sucursal (`src/lib/tienda/cliente.ts`). Ante `opcion_invalida`, `producto_no_disponible` o `venta_deshabilitada` además descarta el catálogo cacheado, para que el formulario recargue el actual.
+- **El formulario muestra el `error` de la sucursal tal cual solo para `datos_invalidos` y `opcion_invalida`**, porque ahí el texto señala el campo (y lo marca, si `campo` corresponde a uno del formulario).
+- **Para `venta_deshabilitada`, `producto_no_disponible` y `demasiados_pedidos` muestra textos propios.** Cambiar esos textos en `tienda_crear_venta` no se ve en la landing.
+- **Ante un 5xx** con error en contrato (`error_interno`) muestra un texto propio de "algo falló del lado de la sucursal". **Ante un 401, un timeout, un cuerpo que no es JSON o una respuesta fuera de contrato**, uno de "no pudimos conectar con la sucursal".
+- En el ticket, un `404 no_encontrada` se muestra siempre con el texto de la landing.
 
 ---
 
@@ -260,6 +266,8 @@ pendiente_pago ──(llegó el comprobante)──▶ pagado ──(lo retiró)�
       │                                        │
       ├──(el equipo la cancela)──▶ cancelado ◀─┤ (con motivo: hay que devolver la plata)
       └──(venció sin pago)───────▶ cancelado   (motivo_cancelacion = 'vencido')
+                                       │
+                                       └──(el comprobante llegó tarde)──▶ pagado   (solo las vencidas)
 ```
 
 | Estado | Lo pone | Cuándo |
@@ -267,9 +275,9 @@ pendiente_pago ──(llegó el comprobante)──▶ pagado ──(lo retiró)�
 | `pendiente_pago` | la sucursal, al crear | Reservada; espera la transferencia. |
 | `pagado` | socio o encargado, en `/tienda` | Llegó el comprobante por el monto exacto. |
 | `retirado` | socio, encargado o barista | El cliente se llevó el café. Estado final. |
-| `cancelado` | socio o encargado, o el vencimiento automático | Estado final. |
+| `cancelado` | socio o encargado, o el vencimiento automático | Estado final, salvo las vencidas (`motivo_cancelacion = 'vencido'`): socio o encargado pueden pasarlas a `pagado` si el cliente había transferido y el comprobante se vio tarde. |
 
-`retirado` y `cancelado` no cambian más. Cada paso guarda la fecha y quién lo hizo (`pagado_at`/`pagado_por`, etc.). La landing ve solo las fechas.
+`retirado` no cambia más, y `cancelado` tampoco, salvo la excepción de las vencidas. Al pasar una vencida a `pagado`, la sucursal completa `pagado_at` y **vuelve a poner en `null`** `cancelado_at` y `motivo_cancelacion`: el ticket la ve como cualquier pagada (lo que tenía queda en la auditoría de la sucursal). La landing no puede dar por final un `cancelado` con motivo `vencido`. Cada paso guarda la fecha y quién lo hizo (`pagado_at`/`pagado_por`, etc.). La landing ve solo las fechas.
 
 ---
 
@@ -277,9 +285,10 @@ pendiente_pago ──(llegó el comprobante)──▶ pagado ──(lo retiró)�
 
 - La landing genera una `idempotency_key` (UUID) por intento de compra y la **reusa** si reintenta, por ejemplo después de un timeout o de un doble clic.
 - La misma clave devuelve **la misma venta**, con status `200` en lugar de `201`, y un **token nuevo**. El token anterior deja de servir: queda guardado solo el hash del último.
+- La repetición tiene que traer **el mismo teléfono** (se comparan los últimos 10 dígitos). Si no coincide, no es un reintento: responde `400 datos_invalidos` con `campo: idempotency_key`, y la venta y su token no cambian.
 - Con la misma clave no se vuelve a validar stock ni a contar el límite por teléfono. La repetición responde `200` aunque la venta se haya pausado después.
 - Si dos requests con la misma clave llegan a la vez, un candado (`pg_advisory_xact_lock`) las serializa, y una restricción `unique` hace de red de seguridad. Nunca se duplica la venta.
-- La landing no debe reusar una clave para un pedido distinto: recibiría la venta vieja.
+- La landing no debe reusar una clave para un pedido distinto: recibiría la venta vieja (o `datos_invalidos`, si cambió el teléfono).
 
 ---
 
@@ -287,7 +296,8 @@ pendiente_pago ──(llegó el comprobante)──▶ pagado ──(lo retiró)�
 
 - La sucursal genera el token con `crypto.randomBytes(32).toString('base64url')`: 43 caracteres.
 - Se devuelve **una sola vez**, en la respuesta del POST.
-- En la base se guarda solo su `sha-256` en hex (`tienda_ventas.token_hash`). Con un volcado de la base no se puede consultar ningún ticket.
+- En la base se guarda solo su `sha-256` en hex (`tienda_ventas.token_hash`). Un volcado de la base no revela los tokens que ya tienen los clientes.
+- La `idempotency_key` sí se guarda en claro. Con ella y el mismo teléfono, el POST entrega un token nuevo de esa venta (y deja sin efecto el anterior). Por eso no se loguea y el equipo no la ve: `authenticated` lee `tienda_ventas` por columnas, sin `idempotency_key` ni `token_hash`.
 - Para consultar una venta hacen falta el secreto de la landing **y** el token. El token viaja en el header `X-Venta-Token`, nunca en la URL de la sucursal. En la landing va en el fragmento (`#t=...`) del link del ticket, que el navegador no le manda a ningún servidor.
 - La comparación se hace en tiempo constante, y también se compara cuando el código no existe.
 
@@ -325,14 +335,15 @@ La sucursal no limita por IP: eso, y el control de bots, lo hace la landing ante
 - **Lo que nunca sale de la sucursal:** `VentaPublica` no incluye teléfono, email, nota, ids internos ni quién movió la venta. Del nombre manda solo el de pila (`"Juana Pérez"` → `"Juana"`).
 - **Lo que no se loguea:** la sucursal no escribe en los logs datos del cliente (nombre, teléfono, email, nota), ni el token, ni el secreto. Solo el código de error técnico.
 - **Lo que ve el equipo:** el teléfono, el email y la nota se ven solo en `/tienda` de la app de la sucursal, con sesión iniciada de socio, encargado o barista.
-- **Permisos en la base:** las tablas `tienda_*` tienen RLS. Las leen solo socio, encargado y barista activos, y escribe solo el servidor (`service_role`). Las funciones `tienda_*` las ejecuta solo `service_role`.
+- **Permisos en la base:** las tablas `tienda_*` tienen RLS. Las leen solo socio, encargado y barista activos (de `tienda_ventas`, todas las columnas menos `token_hash` e `idempotency_key`), y escribe solo el servidor (`service_role`). Las funciones `tienda_*` las ejecuta solo `service_role`.
+- **Rutas del equipo:** `/api/tienda/config` y `/api/tienda/ventas*` usan `service_role`, así que exigen ellas mismas sesión, rol y perfil activo (`profiles.is_active`).
 
 ---
 
 ## Versionado
 
 - **v1:** esta versión. Se anuncia con `X-Contrato-Version: 1` y en el catálogo con `"version": 1`.
-- **Cambios compatibles** (no suben la versión): agregar campos **opcionales** a las respuestas que la landing pueda ignorar, agregar productos u opciones, o cambiar textos de error.
+- **Cambios compatibles** (no suben la versión): agregar campos **opcionales** a las respuestas que la landing pueda ignorar, agregar productos u opciones, o cambiar textos de error (de los 4xx, la landing muestra el de la sucursal solo para `datos_invalidos` y `opcion_invalida`: ver [Errores](#errores)).
   - Ojo: los schemas zod de la landing son `z.object` y **descartan** las claves que no conocen. Un campo nuevo no rompe nada, pero tampoco se usa hasta que la landing lo agregue.
 - **Cambios incompatibles** (suben a v2): cambiar o quitar un campo, cambiar un tipo, agregar un estado, o cambiar el significado de un status. Mientras dure la transición, la sucursal tiene que aceptar las dos versiones según el header `X-Contrato-Version`, y la landing manda la versión nueva recién cuando las dos sucursales la soportan.
 - **Cualquier cambio** se hace primero en `src/lib/tienda/contrato.ts` de la landing y después se copia a `src/lib/tienda/tipos.ts` de cada sucursal.

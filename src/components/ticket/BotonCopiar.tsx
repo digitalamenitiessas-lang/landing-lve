@@ -29,7 +29,10 @@ export default function BotonCopiar({
   className,
 }: Props) {
   const [resultado, setResultado] = useState<Resultado>("nada");
+  /** Lo que no se pudo copiar: se muestra en un campo para copiarlo a mano. */
+  const [pendiente, setPendiente] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const campo = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(
     () => () => {
@@ -42,9 +45,19 @@ export default function BotonCopiar({
     const texto = typeof valor === "function" ? valor() : valor;
     const ok = await copiarTexto(texto);
     setResultado(ok ? "copiado" : "error");
+    setPendiente(ok ? null : texto);
     if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => setResultado("nada"), ok ? 2200 : 5000);
+    // El error no se borra solo: el campo para copiar a mano queda hasta el próximo clic.
+    if (ok) timer.current = setTimeout(() => setResultado("nada"), 2200);
   }
+
+  // Al fallar, el campo aparece seleccionado (listo para "Copiar" del menú del sistema).
+  useEffect(() => {
+    if (resultado === "error" && pendiente !== null) {
+      campo.current?.focus({ preventScroll: true });
+      campo.current?.select();
+    }
+  }, [resultado, pendiente]);
 
   const copiado = resultado === "copiado";
 
@@ -75,10 +88,21 @@ export default function BotonCopiar({
           <span className="sr-only">¡Copiado{que ? `: ${que}` : ""}!</span>
         ) : resultado === "error" ? (
           <span className="text-rojo-oscuro">
-            No se pudo copiar solo: mantené apretado el texto y elegí «Copiar».
+            No se pudo copiar solo: copialo desde acá (mantené apretado y elegí «Copiar»).
           </span>
         ) : null}
       </span>
+      {resultado === "error" && pendiente !== null ? (
+        <textarea
+          ref={campo}
+          readOnly
+          value={pendiente}
+          rows={pendiente.includes("\n") ? 6 : 2}
+          aria-label={que ? `Texto para copiar: ${que}` : "Texto para copiar"}
+          onFocus={(e) => e.currentTarget.select()}
+          className="w-full resize-none rounded-md border-2 border-tinta/30 bg-white p-2 font-mono text-base break-all text-tinta"
+        />
+      ) : null}
     </span>
   );
 }

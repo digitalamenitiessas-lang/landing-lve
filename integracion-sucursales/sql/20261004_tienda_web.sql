@@ -14,6 +14,8 @@
 --   RLS sin políticas de escritura; socio, encargado y barista pueden leer.
 --   Las funciones son SECURITY DEFINER y solo las ejecuta service_role.
 -- Seguridad: el token del ticket nunca se guarda, solo su sha-256 (hex).
+--   Ni el hash ni la idempotency_key se le muestran al equipo (grant por columnas),
+--   y repetir una idempotency_key solo devuelve la venta si coincide el teléfono.
 --   El precio y el total salen siempre de esta base, nunca de la landing.
 -- Arranca APAGADA: venta_habilitada = false y el café sin precio ni stock.
 -- Es la misma migración para Santa Fe 746 y para la 24. Se puede correr
@@ -131,8 +133,15 @@ create policy tienda_venta_items_select on public.tienda_venta_items for select 
                  where p.id = auth.uid() and p.is_active and p.role in ('socio', 'encargado', 'barista')));
 
 -- Los permisos automáticos de Supabase dan ALL a anon y authenticated: se cierran.
+-- (revoke all on table también saca los permisos por columna de una corrida anterior)
 revoke all on table public.tienda_productos, public.tienda_ventas, public.tienda_venta_items from anon, authenticated;
-grant select on table public.tienda_productos, public.tienda_ventas, public.tienda_venta_items to authenticated;
+grant select on table public.tienda_productos, public.tienda_venta_items to authenticated;
+-- tienda_ventas: todo menos token_hash e idempotency_key. Con la clave se le puede
+-- pedir a tienda_crear_venta un token nuevo del ticket, así que no se muestra.
+grant select (id, numero, codigo, estado, cliente_nombre, cliente_telefono, cliente_email, nota, total,
+              origen, vence_at, pagado_at, pagado_por, retirado_at, retirado_por, cancelado_at,
+              cancelado_por, motivo_cancelacion, created_at, updated_at)
+  on table public.tienda_ventas to authenticated;
 grant all on table public.tienda_productos, public.tienda_ventas, public.tienda_venta_items to service_role;
 revoke all on sequence public.tienda_ventas_numero_seq from anon, authenticated;
 grant usage, select on sequence public.tienda_ventas_numero_seq to service_role;
@@ -234,6 +243,9 @@ begin
 
   -- 1. Repetición: misma idempotency_key → misma venta, con el token nuevo.
   --    El candado serializa dos pedidos iguales que llegan a la vez.
+  --    Solo si coincide el teléfono (últimos 10 dígitos): la landing estrena
+  --    clave cuando cambian los datos, así que otro teléfono con la misma clave
+  --    no es un reintento y no se le entrega (ni se le rota) el token del ticket.
   if jsonb_typeof(p_venta->'idempotency_key') is distinct from 'string'
      or (p_venta->>'idempotency_key') !~ v_uuid_re then
     return jsonb_build_object('ok', false, 'codigo', 'datos_invalidos',
@@ -242,11 +254,18 @@ begin
   v_key := (p_venta->>'idempotency_key')::uuid;
   perform pg_advisory_xact_lock(hashtextextended('tienda_web:idem:' || v_key::text, 0));
 
+  v_tel10 := right(regexp_replace(coalesce(p_venta->'cliente'->>'telefono', ''), '\D', '', 'g'), 10);
   update public.tienda_ventas set token_hash = p_token_hash
    where idempotency_key = v_key
+     and right(regexp_replace(cliente_telefono, '\D', '', 'g'), 10) = v_tel10
   returning id, codigo into v_venta_id, v_codigo;
   if found then
     return jsonb_build_object('ok', true, 'repetida', true, 'venta_id', v_venta_id, 'codigo', v_codigo);
+  end if;
+  if exists (select 1 from public.tienda_ventas where idempotency_key = v_key) then
+    return jsonb_build_object('ok', false, 'codigo', 'datos_invalidos',
+      'error', 'Este pedido ya se había hecho con otros datos. Recargá la página y volvé a hacerlo.',
+      'campo', 'idempotency_key');
   end if;
 
   -- 2. Interruptor de la sucursal
@@ -474,8 +493,14 @@ begin
     end if;
     update public.tienda_ventas set token_hash = p_token_hash
      where idempotency_key = v_key
+       and right(regexp_replace(cliente_telefono, '\D', '', 'g'), 10) = v_tel10
     returning id, codigo into v_venta_id, v_codigo;
     if not found then
+      if exists (select 1 from public.tienda_ventas where idempotency_key = v_key) then
+        return jsonb_build_object('ok', false, 'codigo', 'datos_invalidos',
+          'error', 'Este pedido ya se había hecho con otros datos. Recargá la página y volvé a hacerlo.',
+          'campo', 'idempotency_key');
+      end if;
       raise;
     end if;
     return jsonb_build_object('ok', true, 'repetida', true, 'venta_id', v_venta_id, 'codigo', v_codigo);

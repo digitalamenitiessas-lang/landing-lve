@@ -4,14 +4,20 @@
  * Los elementos marcados con [data-entra] los anima la timeline de entrada.
  * Para que no "salten" (se vean dibujados y después desaparezcan al hidratar),
  * arrancan ocultos SOLO si hay JavaScript y el usuario acepta movimiento.
- * Sin JS o con prefers-reduced-motion se ven completos desde el primer paint.
+ * Sin JS, con prefers-reduced-motion o con "Pausar animaciones" se ven
+ * completos desde el primer paint.
+ *
+ * "Hay JavaScript" = clase .js en <html>, que pone el script inline del <head>
+ * (SCRIPT_MOVIMIENTO en src/lib/movimiento.ts). No usamos @media (scripting):
+ * Safari < 17 y Chromium < 120 no la conocen, la query da false y el arte
+ * aparecía dibujado y desaparecía al hidratar.
  *
  * Red de seguridad: si por lo que sea GSAP no llega a correr, a los 3 s una
  * animación CSS los vuelve visibles igual.
  */
 
-@media (scripting: enabled) and (prefers-reduced-motion: no-preference) {
-  .hero [data-entra] {
+@media (prefers-reduced-motion: no-preference) {
+  :global(html.js:not([data-movimiento="pausado"])) .hero [data-entra] {
     visibility: hidden;
     animation: seguro 0s linear 3s forwards;
   }
@@ -39,6 +45,11 @@
     animation-name: entra-kicker;
     animation-duration: 0.8s;
     animation-timing-function: ease-in-out;
+  }
+  /* Con "Pausar animaciones" el texto aparece completo: pausarlo a mitad de la
+     entrada (o en el 0% al cargar) lo dejaría invisible. */
+  :global(html[data-movimiento="pausado"]) .hero [data-css] {
+    animation: none;
   }
 }
 

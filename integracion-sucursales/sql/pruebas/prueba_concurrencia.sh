@@ -5,6 +5,8 @@
 #   C1: con la función real (el candado por clave hace esperar a la segunda).
 #   C2: con una copia SIN candados, para probar la red de seguridad
 #       (unique_violation sobre tienda_ventas_idempotency_key_key → "repetida").
+#   C3: igual que C2 pero B trae OTRO teléfono: no es un reintento → B recibe
+#       datos_invalidos y el token sigue siendo el de A.
 # Correr DESPUÉS de prueba_tienda_web.sql (deja la venta habilitada y el café con precio).
 # Uso: CONTENEDOR=lve-kit-pg ./prueba_concurrencia.sh
 # ---------------------------------------------------------------------------
@@ -38,11 +40,11 @@ grant usage on schema prueba_c to service_role;
 grant execute on all functions in schema prueba_c to service_role;
 SQL
 
-correr() { # $1 = función, $2 = clave, $3 = token, $4 = espera después de crear (s)
+correr() { # $1 = función, $2 = clave, $3 = token, $4 = espera después de crear (s), $5 = teléfono
   psqlc -At <<SQL
 set role service_role;
 begin;
-select '$3 ' || clock_timestamp()::time || ' ' || $1(prueba_c.venta('$2', '381 700-0000'), 'WEB-SF', prueba_c.hash('$3'))::text;
+select '$3 ' || clock_timestamp()::time || ' ' || $1(prueba_c.venta('$2', '${5:-381 700-0000}'), 'WEB-SF', prueba_c.hash('$3'))::text;
 select pg_sleep($4);
 commit;
 SQL
@@ -69,6 +71,23 @@ SQL
   grep -q '"repetida": true' "$T/b.txt" || { echo "FALLO $1: B no salió como repetida"; exit 1; }
   grep -q '"repetida": false' "$T/a.txt" || { echo "FALLO $1: A no creó la venta"; exit 1; }
 done
+
+echo "== C3 (prueba_c.crear_sin_candado): misma clave, B con otro teléfono"
+K3=bbbbbbbb-0000-4000-8000-000000000003
+correr prueba_c.crear_sin_candado "$K3" "token-A" 2 > "$T/a.txt" &
+sleep 0.5
+correr prueba_c.crear_sin_candado "$K3" "token-B" 0 "11 4444-0000" > "$T/b.txt"
+wait
+echo "A: $(cat "$T/a.txt")"
+echo "B: $(cat "$T/b.txt")"
+psqlc -At <<SQL
+do \$\$ begin
+  assert (select count(*) from public.tienda_ventas where idempotency_key = '$K3') = 1, 'FALLO C3: no hay exactamente una venta';
+  assert (select token_hash from public.tienda_ventas where idempotency_key = '$K3') = prueba_c.hash('token-A'), 'FALLO C3: B rotó el token';
+end \$\$;
+SQL
+grep -q '"codigo": "datos_invalidos"' "$T/b.txt" || { echo "FALLO C3: B no salió como datos_invalidos"; exit 1; }
+grep -q '"repetida": false' "$T/a.txt" || { echo "FALLO C3: A no creó la venta"; exit 1; }
 
 psqlc -c "drop schema prueba_c cascade;"
 echo "CONCURRENCIA OK"

@@ -6,7 +6,8 @@ import { getSucursal, type SucursalId } from "@/config/sucursales";
 import { rutaTicket } from "@/lib/tienda/api-landing";
 import type { EstadoVenta } from "@/lib/tienda/contrato";
 import { nombreDePila } from "@/lib/formato";
-import { AvisoNoEncontrado, AvisoSinConexion, AvisoSinToken } from "./Avisos";
+import { pendienteVencido } from "@/lib/mis-pedidos";
+import { AvisoNoEncontrado, AvisoReservaVencida, AvisoSinConexion, AvisoSinToken } from "./Avisos";
 import BotonCopiar from "./BotonCopiar";
 import Detalle from "./Detalle";
 import { EstadoCancelado, EstadoPagado, EstadoRetirado } from "./Estados";
@@ -43,7 +44,10 @@ const hora = new Intl.DateTimeFormat("es-AR", {
  */
 export default function Ticket({ sucursal: sucursalId, codigo }: TicketProps) {
   const sucursal = getSucursal(sucursalId);
-  const { estado, token, consultando, refrescar } = useVenta(sucursalId, codigo);
+  const { estado, token, consultando, consultandoManual, refrescar } = useVenta(
+    sucursalId,
+    codigo,
+  );
 
   if (estado.fase === "cargando") return <TicketEsqueleto codigo={codigo} />;
   if (estado.fase === "sin-token") return <AvisoSinToken sucursal={sucursal} codigo={codigo} />;
@@ -57,6 +61,7 @@ export default function Ticket({ sucursal: sucursalId, codigo }: TicketProps) {
         codigo={codigo}
         guardado={estado.guardado}
         consultando={consultando}
+        consultandoManual={consultandoManual}
         onReintentar={refrescar}
       />
     );
@@ -65,6 +70,10 @@ export default function Ticket({ sucursal: sucursalId, codigo }: TicketProps) {
   const { venta, desactualizado, consultadoAt } = estado;
   const activo = estadoActivo(venta.estado);
   const cancelado = venta.estado === "cancelado";
+  // Copia vieja (la sucursal no responde) de un pendiente cuya reserva ya pasó: no
+  // mostramos los datos para transferir, porque la sucursal ya lo debe haber cancelado.
+  // Solo con datos desactualizados: una respuesta fresca ya viene con el vencimiento aplicado.
+  const vencidoSinConfirmar = desactualizado && pendienteVencido(venta);
 
   return (
     <HojaCuaderno
@@ -98,19 +107,23 @@ export default function Ticket({ sucursal: sucursalId, codigo }: TicketProps) {
       </p>
 
       {desactualizado ? (
-        <div
-          role="status"
-          className="mt-5 flex flex-wrap items-center gap-3 rounded-lg border-2 border-sol bg-sol/15 p-3 text-base"
-        >
+        <div className="mt-5 flex flex-wrap items-center gap-3 rounded-lg border-2 border-sol bg-sol/15 p-3 text-base">
           <CloudOff className="size-5 shrink-0 text-tinta" aria-hidden="true" />
-          <p className="min-w-0 flex-1">
-            La sucursal no responde ahora: te mostramos lo último que sabemos.
-            {consultando ? " Reintentando…" : " Reintentamos solos."}
+          {/* Texto fijo: se anuncia al perder la conexión, no en cada reintento automático. */}
+          <p role="status" className="min-w-0 flex-1">
+            La sucursal no responde ahora: te mostramos lo último que sabemos. Reintentamos
+            solos.
+            {consultando ? <span aria-hidden="true"> Reintentando…</span> : null}
+            {consultandoManual ? <span className="sr-only"> Reintentando…</span> : null}
           </p>
+          {/* Sin disabled: el polling no le saca el foco al botón. */}
           <button
             type="button"
-            onClick={refrescar}
-            disabled={consultando}
+            onClick={() => {
+              if (!consultandoManual) refrescar();
+            }}
+            aria-disabled={consultandoManual || undefined}
+            aria-busy={consultando || undefined}
             className="boton boton-tinta min-h-11 bg-papel-claro px-4 py-2 text-sm"
           >
             <RefreshCw
@@ -126,11 +139,14 @@ export default function Ticket({ sucursal: sucursalId, codigo }: TicketProps) {
         <Progreso venta={venta} />
       </div>
 
-      {venta.estado === "pendiente_pago" ? (
+      {vencidoSinConfirmar ? (
+        <AvisoReservaVencida venta={venta} />
+      ) : venta.estado === "pendiente_pago" ? (
         <PasosPago
           venta={venta}
           sucursal={sucursal}
           consultando={consultando}
+          consultandoManual={consultandoManual}
           onRefrescar={refrescar}
         />
       ) : venta.estado === "pagado" ? (

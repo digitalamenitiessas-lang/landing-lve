@@ -140,6 +140,24 @@ do $$ declare r jsonb; begin
   raise notice 'T06b (venta pausada, misma clave) %', r;
   assert r->>'repetida' = 'true', 'FALLO T06b';
 end $$;
+
+\echo '== T06c misma clave con OTRO teléfono: no es un reintento (ni token nuevo ni la venta)'
+do $$ declare r jsonb; v record; begin
+  r := public.tienda_crear_venta(
+         prueba.venta('aaaaaaaa-0000-4000-8000-000000000001', '11 4444-0000', '[{"producto_id":"x","cantidad":1,"opciones":{}}]', 'Xx'),
+         'WEB-SF', prueba.hash('token-intruso'));
+  raise notice 'T06c %', r;
+  assert r->>'ok' = 'false' and r->>'codigo' = 'datos_invalidos' and r->>'campo' = 'idempotency_key'
+     and r->>'venta_id' is null, 'FALLO T06c respuesta';
+  select * into v from public.tienda_ventas where idempotency_key = 'aaaaaaaa-0000-4000-8000-000000000001';
+  assert v.token_hash = prueba.hash('token-3'), 'FALLO T06c: rotó el token del cliente';
+  -- el mismo teléfono escrito de otra forma sí es un reintento
+  r := public.tienda_crear_venta(
+         prueba.venta('aaaaaaaa-0000-4000-8000-000000000001', '+54 9 381 555 1234', prueba.cafe('2')),
+         'WEB-SF', prueba.hash('token-4'));
+  raise notice 'T06d mismo teléfono con otro formato: %', r;
+  assert r->>'repetida' = 'true' and r->>'codigo' = 'WEB-SF-0001', 'FALLO T06d';
+end $$;
 reset role;
 update public.app_settings set value = jsonb_set(value, '{venta_habilitada}', 'true') where key = 'tienda';
 set role service_role;
@@ -274,6 +292,17 @@ do $$ declare n int; v record; r jsonb; begin
          prueba.cafe('1')), 'WEB-SF', prueba.hash('t7'));
   raise notice 'T13d nueva después de vencer: %', r;
   assert r->>'ok' = 'true', 'FALLO T13d';
+  -- vencida que se había pagado a tiempo: el equipo la pasa a pagado como lo hace
+  -- PATCH /api/tienda/ventas/[id] (limpia cancelado_*), y ya no se vuelve a vencer
+  update public.tienda_ventas
+     set estado = 'pagado', pagado_at = now(), pagado_por = '11111111-1111-4111-8111-111111111111',
+         cancelado_at = null, cancelado_por = null, motivo_cancelacion = null
+   where codigo = 'WEB-SF-0003' and estado = 'cancelado' and motivo_cancelacion = 'vencido';
+  assert found, 'FALLO T13e: no pasó la vencida a pagado';
+  n := public.tienda_vencer_pendientes();
+  select * into v from public.tienda_ventas where codigo = 'WEB-SF-0003';
+  raise notice 'T13e vencida → pagado: estado=% cancelado_at=% motivo=% (vencer otra vez: %)', v.estado, v.cancelado_at, v.motivo_cancelacion, n;
+  assert v.estado = 'pagado' and v.pagado_at is not null and v.cancelado_at is null and v.motivo_cancelacion is null and n = 0, 'FALLO T13e';
 end $$;
 
 \echo '== T14 vencimiento_horas configurable (12 h) y número > 9999'
@@ -361,6 +390,16 @@ do $$ declare n int; begin
   select count(*) into n from public.tienda_ventas;
   raise notice 'T21h barista ve % ventas', n;
   assert n = 7, 'FALLO T21h';
+  perform codigo, cliente_telefono, estado, motivo_cancelacion from public.tienda_ventas;
+  begin perform idempotency_key from public.tienda_ventas;
+        assert false, 'FALLO T21j: el equipo lee idempotency_key';
+  exception when insufficient_privilege then raise notice 'T21j OK el equipo no lee idempotency_key: %', sqlerrm; end;
+  begin perform token_hash from public.tienda_ventas;
+        assert false, 'FALLO T21k: el equipo lee token_hash';
+  exception when insufficient_privilege then raise notice 'T21k OK el equipo no lee token_hash'; end;
+  begin perform * from public.tienda_ventas;
+        assert false, 'FALLO T21l: select * debería fallar';
+  exception when insufficient_privilege then raise notice 'T21l OK select * falla (hay que nombrar las columnas)'; end;
 end $$;
 
 -- chef: no ve nada
@@ -380,6 +419,7 @@ select c.relname,
        has_table_privilege('anon', c.oid, 'select') as anon_select,
        has_table_privilege('anon', c.oid, 'insert') as anon_insert,
        has_table_privilege('authenticated', c.oid, 'select') as auth_select,
+       has_any_column_privilege('authenticated', c.oid, 'select') as auth_select_cols,
        has_table_privilege('authenticated', c.oid, 'insert,update,delete') as auth_escribe,
        c.relrowsecurity as rls
   from pg_class c

@@ -265,7 +265,7 @@ export async function consultarVenta(
   sucursal: SucursalId,
   codigo: string,
   token: string,
-  opts: { origen: string },
+  opts: { origen: string; ipCliente?: string },
 ): Promise<ResultadoSucursal<{ venta: VentaPublica }>> {
   return llamar({
     sucursal,
@@ -274,6 +274,9 @@ export async function consultarVenta(
     metodo: "GET",
     ruta: `/api/tienda/publico/ventas/${encodeURIComponent(codigo)}`,
     schema: ConsultarVentaRespuestaSchema,
-    headers: { [HEADER_TOKEN_VENTA]: token },
+    headers: {
+      [HEADER_TOKEN_VENTA]: token,
+      ...(opts.ipCliente ? { "X-Cliente-IP": opts.ipCliente } : {}),
+    },
   });
 }

@@ -49,6 +49,7 @@ import {
   mensajeDeError,
   normalizarOpciones,
   nuevaClave,
+  senalConTimeout,
   valoresVisibles,
   type CampoDato,
   type CampoForm,
@@ -66,12 +67,23 @@ type EstadoCatalogo =
   | { estado: "listo"; catalogo: CatalogoPublico }
   | { estado: "error"; mensaje: string };
 
-async function pedirCatalogo(id: SucursalId): Promise<EstadoCatalogo> {
+/** Tope para el GET del catálogo: pasado este tiempo se trata como sin conexión. */
+const TIMEOUT_CATALOGO_MS = 15_000;
+/** Tope para el POST de la venta: margen sobre el arranque en frío + los 8 s hacia la sucursal. */
+const TIMEOUT_VENTA_MS = 20_000;
+
+async function pedirCatalogo(id: SucursalId, fresco = false): Promise<EstadoCatalogo> {
+  const corte = senalConTimeout(TIMEOUT_CATALOGO_MS);
   try {
-    const res = await fetch(`/api/tienda/${id}/catalogo`, {
+    // Después de un 409 (cambió precio o stock) hay que saltear la caché del CDN y del navegador.
+    const url = fresco ? `/api/tienda/${id}/catalogo?fresco=${Date.now()}` : `/api/tienda/${id}/catalogo`;
+    const res = await fetch(url, {
       headers: { Accept: "application/json" },
+      signal: corte.signal,
+      cache: fresco ? "no-store" : "default",
     });
     const json = (await res.json().catch(() => null)) as RespuestaCatalogo | null;
+    if (corte.signal.aborted) return { estado: "error", mensaje: MENSAJE_SIN_CONEXION };
     if (json?.ok) {
       const leido = CatalogoPublicoSchema.safeParse(json.catalogo);
       if (leido.success) return { estado: "listo", catalogo: leido.data };
@@ -83,6 +95,8 @@ async function pedirCatalogo(id: SucursalId): Promise<EstadoCatalogo> {
     };
   } catch {
     return { estado: "error", mensaje: MENSAJE_SIN_CONEXION };
+  } finally {
+    corte.limpiar();
   }
 }
 
@@ -133,11 +147,13 @@ const HOJA: CSSProperties = {
   backgroundRepeat: "no-repeat, repeat-y",
 };
 
+// El borde es lo único que separa el campo de la hoja: tinta/60 da ≥ 4:1 contra el
+// relleno y el papel, también sobre los renglones (WCAG 1.4.11 pide 3:1).
 const INPUT =
-  "block w-full min-h-12 rounded-lg border-2 border-tinta/45 bg-white/80 px-4 py-2.5 text-lg text-tinta placeholder:text-tinta-suave/70 transition-colors hover:border-tinta/70 focus:border-verde focus:bg-white aria-[invalid=true]:border-rojo-oscuro disabled:cursor-not-allowed disabled:opacity-60";
+  "block w-full min-h-12 rounded-lg border-2 border-tinta/60 bg-white/80 px-4 py-2.5 text-lg text-tinta placeholder:text-tinta-suave/70 transition-colors hover:border-tinta/70 focus:border-verde focus:bg-white aria-[invalid=true]:border-rojo-oscuro disabled:cursor-not-allowed disabled:opacity-60";
 
 const FOCO_TARJETA =
-  "has-focus-visible:outline-[3px] has-focus-visible:outline-offset-2 has-focus-visible:outline-sol";
+  "has-focus-visible:outline-[3px] has-focus-visible:outline-offset-2 has-focus-visible:outline-tinta";
 
 function ids(...partes: (string | false | null | undefined)[]): string | undefined {
   const lista = partes.filter(Boolean).join(" ");
@@ -174,35 +190,46 @@ export default function FormularioPedido() {
 
   /** Clave de idempotencia del pedido en curso. */
   const clave = useRef<string | null>(null);
+  /**
+   * Cuerpo (sucursal, items, cliente, nota) que se mandó con `clave`. Un reintento
+   * con el mismo cuerpo conserva la clave; si el cuerpo cambió, se estrena una, así
+   * la sucursal nunca devuelve una venta vieja para un pedido distinto.
+   */
+  const cuerpoDeClave = useRef<string | null>(null);
   /** Momento en que se mostró el formulario (antispam en el servidor). */
   const t0 = useRef<number | null>(null);
-  /** Tras un intento fallido, el próximo cambio de datos estrena clave (un reintento sin cambios la conserva). */
-  const estrenarClave = useRef(false);
   const honeypot = useRef<HTMLInputElement>(null);
+  const formulario = useRef<HTMLFormElement>(null);
+  /** Copia de `enviando` para los listeners (sus closures no ven el estado actual). */
+  const enviandoRef = useRef(false);
   const catalogoEnCurso = useRef(new Set<SucursalId>());
   const catalogoListo = useRef(new Set<SucursalId>());
   /** id del campo a enfocar después de mostrar errores. */
   const focoPendiente = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!focoPendiente.current) return;
-    document.getElementById(focoPendiente.current)?.focus();
-    focoPendiente.current = null;
-  });
+    enviandoRef.current = enviando;
+  }, [enviando]);
 
-  const marcarCambio = useCallback(() => {
-    if (estrenarClave.current) {
-      clave.current = nuevaClave();
-      estrenarClave.current = false;
+  useEffect(() => {
+    const id = focoPendiente.current;
+    if (!id) return;
+    focoPendiente.current = null;
+    const destino = document.getElementById(id);
+    destino?.focus();
+    // Si el campo no existe o no se puede enfocar (p. ej. el catálogo se está
+    // recargando), el foco va al aviso general para no dejarlo en el documento.
+    if (!destino || document.activeElement !== destino) {
+      document.getElementById(f("error-general"))?.focus();
     }
-  }, []);
+  });
 
   const cargarCatalogo = useCallback((id: SucursalId, forzar = false) => {
     if (catalogoEnCurso.current.has(id)) return;
     if (!forzar && catalogoListo.current.has(id)) return;
     catalogoEnCurso.current.add(id);
     setCatalogos((prev) => ({ ...prev, [id]: { estado: "cargando" } }));
-    void pedirCatalogo(id).then((estado) => {
+    void pedirCatalogo(id, forzar).then((estado) => {
       catalogoEnCurso.current.delete(id);
       if (estado.estado === "listo") catalogoListo.current.add(id);
       else catalogoListo.current.delete(id);
@@ -213,11 +240,10 @@ export default function FormularioPedido() {
   const elegirSucursal = useCallback(
     (id: SucursalId) => {
       setSucursalId(id);
-      marcarCambio();
       setErrores((prev) => (prev.sucursal ? { ...prev, sucursal: undefined } : prev));
       cargarCatalogo(id);
     },
-    [cargarCatalogo, marcarCambio],
+    [cargarCatalogo],
   );
 
   // Al montar: clave, t0, datos recordados y ?sucursal= de la URL.
@@ -235,14 +261,24 @@ export default function FormularioPedido() {
   }, [elegirSucursal]);
 
   // Otras secciones pueden preseleccionar la sucursal ("Pedí acá tu café").
+  // Si el evento es cancelable, preventDefault() avisa que el formulario se encarga
+  // del scroll y del foco (el botón solo scrollea si nadie lo canceló).
   useEffect(() => {
     const alElegir = (evento: Event) => {
       const id = (evento as CustomEvent<Partial<DetalleElegirSucursal> | undefined>).detail?.id;
-      if (typeof id === "string" && esSucursalId(id)) elegirSucursal(id);
+      if (typeof id !== "string" || !esSucursalId(id)) return;
+      if (evento.cancelable) evento.preventDefault();
+      // Con un pedido en vuelo no se cambia nada: la sucursal queda como se mandó.
+      if (!enviandoRef.current) {
+        elegirSucursal(id);
+        document.getElementById(`pedido${uid}suc-${id}`)?.focus({ preventScroll: true });
+      }
+      const reducir = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      formulario.current?.scrollIntoView({ behavior: reducir ? "instant" : "smooth", block: "start" });
     };
     window.addEventListener(EVENTO_ELEGIR_SUCURSAL, alElegir);
     return () => window.removeEventListener(EVENTO_ELEGIR_SUCURSAL, alElegir);
-  }, [elegirSucursal]);
+  }, [elegirSucursal, uid]);
 
   /* ---------------- derivados ---------------- */
 
@@ -254,6 +290,21 @@ export default function FormularioPedido() {
   const producto: Producto | null = catalogo ? elegirProducto(catalogo.productos) : null;
   const vendiendo = Boolean(catalogo?.venta_habilitada && producto?.disponible);
   const bloqueado = Boolean(catalogo && !vendiendo);
+  /** Por qué no se puede comprar: venta pausada, café agotado o todavía sin producto. */
+  const motivoBloqueo: "pausada" | "agotado" | "sin-producto" | null =
+    !catalogo || vendiendo
+      ? null
+      : !catalogo.venta_habilitada
+        ? "pausada"
+        : producto
+          ? "agotado"
+          : "sin-producto";
+  const tituloBloqueo =
+    motivoBloqueo === "pausada"
+      ? "La venta web está pausada en esta sucursal"
+      : motivoBloqueo === "agotado"
+        ? "Agotado en esta sucursal"
+        : "Todavía no estamos vendiendo café en esta sucursal";
   const maximo = cantidadMaxima(producto);
   const cantidadFinal = Math.min(Math.max(cantidad, 1), maximo);
   const opcionesFinales = normalizarOpciones(producto, opciones);
@@ -272,8 +323,8 @@ export default function FormularioPedido() {
       ? `Cargando el precio de ${sucursal.nombre}…`
       : estadoCatalogo?.estado === "error"
         ? estadoCatalogo.mensaje
-        : !vendiendo
-          ? "Todavía no estamos vendiendo café en esta sucursal."
+        : motivoBloqueo
+          ? `${tituloBloqueo}.`
           : producto
             ? `Precio de la sucursal ${sucursal.nombre}: ${formatPesos(producto.precio)} cada bolsa.`
             : "";
@@ -284,7 +335,6 @@ export default function FormularioPedido() {
     (campo: CampoDato) => (e: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
       const valor = e.target.value;
       setDatos((d) => ({ ...d, [campo]: valor }));
-      marcarCambio();
       if (errores[campo]) setErrores((prev) => ({ ...prev, [campo]: validarCampo(campo, valor) }));
     };
 
@@ -295,14 +345,12 @@ export default function FormularioPedido() {
 
   const elegirOpcion = (opcion: Opcion, valorId: string) => {
     setOpciones((prev) => ({ ...prev, [opcion.id]: valorId }));
-    marcarCambio();
     const campo: CampoForm = `opcion:${opcion.id}`;
     setErrores((prev) => (prev[campo] ? { ...prev, [campo]: undefined } : prev));
   };
 
   const cambiarCantidad = (delta: number) => {
     setCantidad(Math.min(Math.max(cantidadFinal + delta, 1), maximo));
-    marcarCambio();
     setErrores((prev) => (prev.cantidad ? { ...prev, cantidad: undefined } : prev));
   };
 
@@ -313,7 +361,11 @@ export default function FormularioPedido() {
 
   const idDeCampo = (campo: CampoForm): string => {
     if (campo === "sucursal") return f(`suc-${SUCURSALES[0]!.id}`);
-    if (campo === "cantidad") return f("mas");
+    // Nunca un botón deshabilitado: "+" en el máximo no toma el foco.
+    if (campo === "cantidad") {
+      if (cantidadFinal < maximo) return f("mas");
+      return cantidadFinal > 1 ? f("menos") : f("cant-titulo");
+    }
     if (campo.startsWith("opcion:")) return f(`op-${campo.slice(7)}-0`);
     return f(campo);
   };
@@ -371,38 +423,53 @@ export default function FormularioPedido() {
       guardarDatosRecordados({ nombre: cliente.nombre, telefono: cliente.telefono, email: cliente.email ?? "" });
     }
 
-    clave.current ??= nuevaClave();
+    const items = [{ producto_id: producto.id, cantidad: cantidadFinal, opciones: opcionesFinales }];
+    const nota = datos.nota.trim() || null;
+    // La clave queda atada al cuerpo: mismo pedido → misma clave (el reintento no
+    // duplica); pedido distinto → clave nueva (la sucursal no devuelve la venta vieja).
+    const huella = JSON.stringify({ sucursalId, items, cliente, nota });
+    if (!clave.current || (cuerpoDeClave.current !== null && cuerpoDeClave.current !== huella)) {
+      clave.current = nuevaClave();
+    }
+    cuerpoDeClave.current = huella;
     const cuerpo: CrearVentaLandingBody = {
       idempotency_key: clave.current,
-      items: [{ producto_id: producto.id, cantidad: cantidadFinal, opciones: opcionesFinales }],
+      items,
       cliente,
-      nota: datos.nota.trim() || null,
+      nota,
       hp: honeypot.current?.value ?? "",
-      t0: t0.current ?? undefined,
+      // Siempre está seteado al montar; si no, Date.now() hace que el servidor lo trate como envío instantáneo.
+      t0: t0.current ?? Date.now(),
     };
 
     setEnviando(true);
     setErrorGeneral(null);
 
     let respuesta: RespuestaCrearVenta;
+    const corte = senalConTimeout(TIMEOUT_VENTA_MS);
     try {
       const res = await fetch(`/api/tienda/${sucursalId}/ventas`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify(cuerpo),
+        signal: corte.signal,
       });
       const json = (await res.json().catch(() => null)) as RespuestaCrearVenta | null;
+      // Si se venció mientras leíamos la respuesta, cuenta como sin conexión.
+      if (corte.signal.aborted) throw new Error("timeout");
       respuesta = json ?? {
         ok: false,
         error: "",
         codigo: res.status === 429 ? "demasiados_intentos" : "sucursal_no_disponible",
       };
     } catch {
-      // Error de red: un reintento sin cambios usa la misma clave y no duplica el pedido.
-      estrenarClave.current = true;
+      // Error de red o timeout: un reintento sin cambios usa la misma clave y no duplica el pedido.
       setErrorGeneral(MENSAJE_SIN_CONEXION);
+      focoPendiente.current = f("error-general");
       setEnviando(false);
       return;
+    } finally {
+      corte.limpiar();
     }
 
     if (respuesta.ok) {
@@ -419,11 +486,18 @@ export default function FormularioPedido() {
       // para compartir está en "Copiar link del ticket".
       const guardado =
         leerPedido(sucursalId, respuesta.venta.codigo)?.token === respuesta.token;
-      router.push(guardado ? rutaTicket(sucursalId, respuesta.venta.codigo) : destino);
+      if (guardado) {
+        router.push(rutaTicket(sucursalId, respuesta.venta.codigo));
+      } else {
+        // Sin almacenamiento el token viaja en el #t=, y con fragmento Next no vuelve arriba.
+        window.scrollTo({ top: 0, behavior: "instant" });
+        router.push(destino);
+      }
       return; // el botón queda en "Armando tu ticket…" hasta que cambia la página
     }
 
-    estrenarClave.current = true;
+    // Si el autocompletado llenó la trampa, el reintento sale limpio (los bots no corren este código).
+    if (respuesta.codigo === "solicitud_rechazada" && honeypot.current) honeypot.current.value = "";
     const mensaje = mensajeDeError(respuesta.codigo, respuesta.error);
     const campo = campoDelServidor(respuesta.campo);
     if (campo) {
@@ -432,6 +506,7 @@ export default function FormularioPedido() {
       enfocar(campo);
     } else {
       setErrorGeneral(mensaje);
+      focoPendiente.current = f("error-general");
     }
     if (
       respuesta.codigo === "producto_no_disponible" ||
@@ -450,6 +525,7 @@ export default function FormularioPedido() {
 
   return (
     <form
+      ref={formulario}
       noValidate
       onSubmit={enviar}
       aria-labelledby={f("titulo")}
@@ -479,7 +555,12 @@ export default function FormularioPedido() {
         </h3>
 
         {/* ---------------- Sucursal ---------------- */}
-        <fieldset className="mt-8" aria-describedby={ids(err("sucursal") && idErr("sucursal"))}>
+        {/* Con el pedido en vuelo no se puede cambiar nada (el reintento manda lo mismo que se ve). */}
+        <fieldset
+          disabled={enviando}
+          className="mt-8"
+          aria-describedby={ids(err("sucursal") && idErr("sucursal"))}
+        >
           <legend className="text-xl font-bold text-tinta">¿Dónde lo retirás?</legend>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             {SUCURSALES.map((s) => (
@@ -574,11 +655,18 @@ export default function FormularioPedido() {
             </div>
           )}
 
-          {catalogo && !vendiendo && (
+          {motivoBloqueo && (
             <div className="rounded-xl border-2 border-tinta/30 bg-white/70 p-4">
-              <p className="titulo-afiche text-2xl text-verde">
-                Todavía no estamos vendiendo café en esta sucursal
-              </p>
+              {/* Agotado o pausado: se muestra el café, sin precio (agotado llega con precio 0). */}
+              {producto && (
+                <p className="mb-1 text-lg font-bold text-tinta">
+                  {producto.nombre}
+                  {producto.presentacion && (
+                    <span className="font-semibold text-tinta-suave"> · {producto.presentacion}</span>
+                  )}
+                </p>
+              )}
+              <p className="titulo-afiche text-2xl text-verde">{tituloBloqueo}</p>
               <p className="mt-2 text-base text-tinta-suave">
                 {SUCURSALES.length > 1
                   ? "Probá en la otra sucursal o volvé a pasar por acá en unos días."
@@ -588,7 +676,7 @@ export default function FormularioPedido() {
           )}
 
           {producto && vendiendo && (
-            <div className="space-y-7">
+            <fieldset disabled={enviando} className="min-w-0 space-y-7">
               <div>
                 <p className="text-xl font-bold text-tinta">
                   {producto.nombre}
@@ -652,11 +740,12 @@ export default function FormularioPedido() {
               })}
 
               <div role="group" aria-labelledby={f("cant-titulo")} aria-describedby={ids(f("cant-ayuda"), err("cantidad") && idErr("cantidad"))}>
-                <p id={f("cant-titulo")} className="text-xl font-bold text-tinta">
+                <p id={f("cant-titulo")} tabIndex={-1} className="text-xl font-bold text-tinta">
                   ¿Cuántas bolsas?
                 </p>
                 <div className="mt-3 flex items-center gap-3">
                   <button
+                    id={f("menos")}
                     type="button"
                     onClick={() => cambiarCantidad(-1)}
                     disabled={cantidadFinal <= 1}
@@ -690,7 +779,7 @@ export default function FormularioPedido() {
                 </p>
                 {err("cantidad") && <MensajeError id={idErr("cantidad")}>{err("cantidad")}</MensajeError>}
               </div>
-            </div>
+            </fieldset>
           )}
         </div>
 
@@ -796,16 +885,22 @@ export default function FormularioPedido() {
           </label>
         </fieldset>
 
-        {/* Honeypot: invisible para personas, tentador para bots */}
-        <div aria-hidden="true" className="absolute top-0 -left-[9999px] h-px w-px overflow-hidden">
-          <label htmlFor={f("empresa")}>Empresa</label>
+        {/* Honeypot: invisible para personas, tentador para bots. Nombre y etiqueta sin
+            significado para que ningún autocompletado lo llene, y display:none (`hidden`):
+            los navegadores no completan campos que no se pueden enfocar. */}
+        <div aria-hidden="true" className="hidden">
+          <label htmlFor={f("lve-hp-campo")}>No completar este campo</label>
           <input
             ref={honeypot}
-            id={f("empresa")}
-            name="empresa"
+            id={f("lve-hp-campo")}
+            name="lve_hp_campo"
             type="text"
             tabIndex={-1}
             autoComplete="off"
+            data-lpignore="true"
+            data-1p-ignore=""
+            data-bwignore=""
+            data-form-type="other"
             defaultValue=""
           />
         </div>
@@ -848,14 +943,18 @@ export default function FormularioPedido() {
         </section>
 
         {/* ---------------- Envío ---------------- */}
-        <div aria-live="polite" aria-atomic="true">
-          {errorGeneral && (
-            <p className="mt-6 flex items-start gap-2 rounded-lg border-2 border-rojo-oscuro/60 bg-white/85 p-4 text-lg font-semibold text-rojo-oscuro">
-              <CircleAlert aria-hidden="true" className="mt-1 size-5 shrink-0" />
-              {errorGeneral}
-            </p>
-          )}
-        </div>
+        {/* Sin aria-live: cada error mueve el foco (al campo, que lee su mensaje, o a este
+            aviso), así el lector lo anuncia una sola vez. */}
+        {errorGeneral && (
+          <p
+            id={f("error-general")}
+            tabIndex={-1}
+            className="mt-6 flex items-start gap-2 rounded-lg border-2 border-rojo-oscuro/60 bg-white/85 p-4 text-lg font-semibold text-rojo-oscuro"
+          >
+            <CircleAlert aria-hidden="true" className="mt-1 size-5 shrink-0" />
+            {errorGeneral}
+          </p>
+        )}
 
         <div className="mt-6">
           <button
@@ -878,8 +977,9 @@ export default function FormularioPedido() {
             {catalogo && vendiendo && (
               <>
                 {" "}
-                Te guardamos el pedido {catalogo.vencimiento_horas}{" "}
-                {catalogo.vencimiento_horas === 1 ? "hora" : "horas"} para que lo pagues.
+                Tenés {catalogo.vencimiento_horas}{" "}
+                {catalogo.vencimiento_horas === 1 ? "hora" : "horas"} para transferir y mandarnos el
+                comprobante.
               </>
             )}
           </p>

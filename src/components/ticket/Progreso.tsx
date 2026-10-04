@@ -14,15 +14,24 @@ type Paso = {
 function pasos(venta: VentaPublica): Paso[] {
   const { estado } = venta;
   if (estado === "cancelado") {
+    const cancelado: Paso = {
+      nombre: "Cancelado",
+      fecha: venta.cancelado_at,
+      hecho: false,
+      actual: true,
+      fallido: true,
+    };
+    // Si llegó a estar pagado, no lo escondemos: Pedido → Pagado → Cancelado.
+    if (venta.pagado_at) {
+      return [
+        { nombre: "Pedido", fecha: venta.creado_at, hecho: true, actual: false },
+        { nombre: "Pagado", fecha: venta.pagado_at, hecho: true, actual: false },
+        cancelado,
+      ];
+    }
     return [
       { nombre: "Pedido", fecha: venta.creado_at, hecho: true, actual: false },
-      {
-        nombre: "Cancelado",
-        fecha: venta.cancelado_at,
-        hecho: false,
-        actual: true,
-        fallido: true,
-      },
+      cancelado,
       { nombre: "Retirado", fecha: null, hecho: false, actual: false },
     ];
   }

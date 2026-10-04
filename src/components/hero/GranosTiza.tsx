@@ -11,7 +11,7 @@
 
 import { useRef } from "react";
 import { FILTRO_TIZA } from "@/components/marca/FiltrosTiza";
-import { CONDICIONES, gsap, useGSAP } from "./gsap";
+import { CONDICIONES, gsap, pausarCuandoNoSeVe, useGSAP } from "./gsap";
 import { GRANO } from "./trazos";
 
 type Grano = {
@@ -44,7 +44,7 @@ export default function GranosTiza() {
     () => {
       const mm = gsap.matchMedia();
       mm.add(CONDICIONES.movimiento, () => {
-        gsap.utils.toArray<HTMLElement>("[data-flota]", ref.current).forEach((el, i) => {
+        const tweens = gsap.utils.toArray<HTMLElement>("[data-flota]", ref.current).map((el, i) =>
           gsap.fromTo(
             el,
             { y: -5, rotation: -6 },
@@ -57,8 +57,10 @@ export default function GranosTiza() {
               repeat: -1,
               delay: -i * 0.8,
             },
-          );
-        });
+          ),
+        );
+        // Fuera de pantalla o con "Pausar animaciones", los granos se quedan quietos
+        return pausarCuandoNoSeVe(ref.current, tweens);
       });
       return () => mm.revert();
     },

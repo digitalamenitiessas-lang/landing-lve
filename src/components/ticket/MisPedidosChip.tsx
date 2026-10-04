@@ -34,10 +34,15 @@ export default function MisPedidosChip({ variante = "claro", className }: Props)
 
   return (
     <Link
-      href={rutaTicket(pedido.sucursal, pedido.codigo, pedido.token)}
+      // Sin #t=: el token ya está en este dispositivo (de ahí sale el chip). Con un
+      // fragmento, Next no vuelve arriba al navegar y el ticket abre a mitad de página.
+      href={rutaTicket(pedido.sucursal, pedido.codigo)}
       prefetch={false}
       className={clsx(
-        "inline-flex min-h-11 max-w-full items-center gap-2 rounded-full border-2 px-3.5 py-1.5 text-sm font-bold whitespace-nowrap transition-colors",
+        "inline-flex min-h-11 max-w-full min-w-0 items-center gap-2 rounded-full border-2 px-3.5 py-1.5 text-sm font-bold whitespace-nowrap transition-colors",
+        // Tope propio en mobile (logo + menú ≈ 10rem) para que el texto se trunque
+        // aunque el contenedor de la Nav no se achique: nunca empuja el botón de menú.
+        "max-md:max-w-[calc(100vw-10rem)]",
         variante === "claro"
           ? "border-tiza/60 bg-white/10 text-tiza hover:border-tiza hover:bg-white/20"
           : "border-tinta bg-papel-claro text-tinta hover:bg-tinta hover:text-papel",
@@ -60,7 +65,9 @@ export default function MisPedidosChip({ variante = "claro", className }: Props)
         />
       </span>
       <span className="truncate">
-        Tu pedido <span className="tabular-nums">{pedido.codigo}</span>
+        {/* En pantallas angostas se ve solo el código (lo útil); el resto queda para lectores. */}
+        <span className="max-[379px]:sr-only">Tu pedido </span>
+        <span className="tabular-nums">{pedido.codigo}</span>
       </span>
       <span className="sr-only">: {estadoTexto}</span>
     </Link>

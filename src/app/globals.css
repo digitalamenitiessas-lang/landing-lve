@@ -65,10 +65,31 @@ body {
   color: var(--color-tinta);
 }
 
-:focus-visible {
-  outline: 3px solid var(--color-sol);
-  outline-offset: 3px;
-  border-radius: 4px;
+/*
+ * Foco por teclado. Va en @layer base para que el border-radius de los
+ * componentes (.boton) y de las utilidades (rounded-*) le gane: el outline
+ * sigue ese radio y el control no cambia de forma al enfocarlo.
+ * Tinta sobre papel (≥ 14:1); sobre fondos oscuros, ámbar (sol/pizarra 4.9:1).
+ */
+@layer base {
+  :focus-visible {
+    outline: 3px solid var(--color-tinta);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+  .pizarra :focus-visible,
+  footer :focus-visible,
+  .sobre-oscuro :focus-visible {
+    outline-color: var(--color-sol);
+  }
+  /* Papel adentro de un fondo oscuro (p. ej. el menú mobile): vuelve a tinta */
+  :is(.pizarra, footer, .sobre-oscuro) .papel :focus-visible {
+    outline-color: var(--color-tinta);
+  }
+  /* Secciones que reciben el foco por programa (tabIndex -1): sin recuadro gigante */
+  section[tabindex="-1"]:focus-visible {
+    outline: none;
+  }
 }
 
 @layer components {
@@ -153,15 +174,20 @@ body {
     opacity: 0.55;
     cursor: not-allowed;
   }
+  /* Ocupado pero enfocable (p. ej. "Ya pagué, revisar ahora" mientras consulta): sin atenuar */
+  .boton[aria-busy="true"] {
+    cursor: progress;
+  }
   .boton-rojo {
     background: var(--color-rojo);
     color: #fff;
     box-shadow: 0 4px 0 var(--color-rojo-oscuro);
   }
+  /* En hover se oscurece (blanco/#c43826 = 5.3:1); aclarar lo bajaba de 4.5:1 */
   .boton-rojo:hover:not(:disabled) {
-    background: #df4a35;
+    background: #c43826;
     transform: translateY(-1px);
-    box-shadow: 0 5px 0 var(--color-rojo-oscuro);
+    box-shadow: 0 5px 0 #8f2619;
   }
   .boton-verde {
     background: var(--color-verde);
@@ -188,6 +214,25 @@ body {
     background: var(--color-tinta);
     color: var(--color-papel);
   }
+}
+
+/*
+ * "Pausar animaciones" (src/lib/movimiento.ts): frena todos los bucles CSS
+ * (banderines, sol, marquesina, flechita, ping del chip…). Los spinners de
+ * carga siguen: indican que algo está pasando y duran lo que dura la espera.
+ * Las entradas del hero se resuelven en hero.module.css (se muestran completas).
+ */
+html[data-movimiento="pausado"] *:not([class*="animate-spin"]),
+html[data-movimiento="pausado"] *::before,
+html[data-movimiento="pausado"] *::after {
+  animation-play-state: paused !important;
+}
+
+/* Lo que no se ve no se anima (usePausarFueraDePantalla, components/marca/useMovimiento.ts) */
+[data-fuera-de-pantalla] *,
+[data-fuera-de-pantalla] *::before,
+[data-fuera-de-pantalla] *::after {
+  animation-play-state: paused !important;
 }
 
 @media (prefers-reduced-motion: reduce) {

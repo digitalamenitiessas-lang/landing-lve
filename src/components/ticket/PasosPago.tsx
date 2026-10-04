@@ -14,14 +14,23 @@ type Props = {
   venta: VentaPublica;
   sucursal: Sucursal;
   consultando: boolean;
+  /** La consulta en curso la pidió el cliente con "Ya pagué, revisar ahora". */
+  consultandoManual: boolean;
   onRefrescar: () => void;
 };
 
 /** Pendiente de pago: la tarea para el hogar, en cuatro pasos clarísimos. */
-export default function PasosPago({ venta, sucursal, consultando, onRefrescar }: Props) {
+export default function PasosPago({
+  venta,
+  sucursal,
+  consultando,
+  consultandoManual,
+  onRefrescar,
+}: Props) {
   const { pago, whatsapp } = venta;
   const alias = pago.alias?.trim() || null;
   const cbu = pago.cbu?.trim() || null;
+  const titular = pago.titular?.trim() || null;
   const hayAlias = alias !== null;
   const hayCbu = cbu !== null;
   const hayDatos = hayAlias || hayCbu;
@@ -63,14 +72,17 @@ export default function PasosPago({ venta, sucursal, consultando, onRefrescar }:
                 <Dato etiqueta="Banco" valor={pago.banco} />
                 <Dato etiqueta="CUIT" valor={pago.cuit} />
               </dl>
-              <p className="mt-3 text-sm text-tinta-suave">
-                Antes de confirmar, fijate que el titular coincida.
-              </p>
+              {titular ? (
+                <p className="mt-3 text-sm text-tinta-suave">
+                  Antes de confirmar, fijate que la cuenta esté a nombre de{" "}
+                  <strong className="font-semibold text-tinta">{titular}</strong>.
+                </p>
+              ) : null}
             </>
           ) : (
             <p className="rounded-lg border-2 border-dashed border-rojo/50 bg-rojo/5 p-3 font-semibold text-rojo-oscuro">
-              La sucursal todavía no cargó sus datos de pago: escribinos por WhatsApp
-              {whatsapp ? "" : " o por Instagram"} y te los pasamos.
+              La sucursal todavía no cargó sus datos de pago: escribinos
+              {whatsapp ? " por WhatsApp" : " por Instagram"} y te los pasamos.
             </p>
           )}
         </PasoPago>
@@ -142,20 +154,32 @@ export default function PasosPago({ venta, sucursal, consultando, onRefrescar }:
             <strong className="font-bold">
               <time dateTime={venta.vence_at}>{formatFechaHora(venta.vence_at)}</time>
             </strong>
-            .
+            . Si transferiste y nos mandaste el comprobante antes, no te preocupes: lo
+            confirmamos igual.
           </p>
+          {/* Sin disabled: un botón con foco que se deshabilita pierde el foco (y el
+              polling consulta cada 15 s). El nombre tampoco cambia; lo que pasa se anuncia aparte. */}
           <button
             type="button"
-            onClick={onRefrescar}
-            disabled={consultando}
-            className="boton boton-tinta mt-3 min-h-11 bg-papel-claro px-4 py-2 text-base"
+            onClick={() => {
+              if (!consultandoManual) onRefrescar();
+            }}
+            aria-disabled={consultandoManual || undefined}
+            aria-busy={consultando || undefined}
+            className={clsx(
+              "boton boton-tinta mt-3 min-h-11 bg-papel-claro px-4 py-2 text-base",
+              consultandoManual && "cursor-progress",
+            )}
           >
             <RefreshCw
               className={clsx("size-5", consultando && "motion-safe:animate-spin")}
               aria-hidden="true"
             />
-            {consultando ? "Revisando…" : "Ya pagué, revisar ahora"}
+            Ya pagué, revisar ahora
           </button>
+          <p role="status" className="mt-1 min-h-5 text-sm text-tinta-suave">
+            {consultandoManual ? "Revisando el pago…" : ""}
+          </p>
         </PasoPago>
       </ol>
     </section>

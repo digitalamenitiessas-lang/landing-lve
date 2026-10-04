@@ -8,7 +8,8 @@
  *      al arrastrar, con listeners pasivos (sin preventDefault: el scroll sigue).
  *
  * Un solo requestAnimationFrame, que se pausa cuando el hero no se ve
- * (IntersectionObserver) o la pestaña está oculta. DPR máximo 2. Resize con
+ * (IntersectionObserver), la pestaña está oculta o la persona tocó "Pausar
+ * animaciones" (src/lib/movimiento.ts). DPR máximo 2. Resize con
  * ResizeObserver. Con prefers-reduced-motion no dibuja nada.
  *
  * Escucha los eventos del elemento padre (la <section> del hero), así el
@@ -16,6 +17,7 @@
  */
 
 import { useEffect, useRef } from "react";
+import { movimientoPausado, suscribirMovimiento } from "@/lib/movimiento";
 
 const COLOR = "245, 242, 234"; // tiza
 const VIDA_RASTRO = 1200; // ms
@@ -182,7 +184,8 @@ export default function PolvoDeTiza({ className }: { className?: string }) {
     };
 
     const arrancar = () => {
-      if (raf !== 0 || reducido.matches || !enPantalla || document.hidden) return;
+      if (raf !== 0 || reducido.matches || movimientoPausado() || !enPantalla || document.hidden)
+        return;
       ultimoFrame = 0;
       raf = requestAnimationFrame(dibujar);
     };
@@ -227,8 +230,9 @@ export default function PolvoDeTiza({ className }: { className?: string }) {
       if (document.hidden) parar();
       else arrancar();
     };
+    // prefers-reduced-motion o "Pausar animaciones": se borra y queda quieto
     const alCambiarMovimiento = () => {
-      if (reducido.matches) {
+      if (reducido.matches || movimientoPausado()) {
         parar();
         limpiar();
       } else arrancar();
@@ -240,6 +244,7 @@ export default function PolvoDeTiza({ className }: { className?: string }) {
     host.addEventListener("touchmove", alTocar, { passive: true });
     document.addEventListener("visibilitychange", alCambiarVisibilidad);
     reducido.addEventListener("change", alCambiarMovimiento);
+    const desuscribirMovimiento = suscribirMovimiento(alCambiarMovimiento);
 
     arrancar();
 
@@ -253,6 +258,7 @@ export default function PolvoDeTiza({ className }: { className?: string }) {
       host.removeEventListener("touchmove", alTocar);
       document.removeEventListener("visibilitychange", alCambiarVisibilidad);
       reducido.removeEventListener("change", alCambiarMovimiento);
+      desuscribirMovimiento();
     };
   }, []);
 

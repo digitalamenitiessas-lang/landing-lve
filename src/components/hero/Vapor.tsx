@@ -9,11 +9,12 @@
  * - vaivén horizontal leve con desfase entre volutas.
  * Arriba se desvanecen con una máscara de gradiente. El Hero inclina el grupo
  * [data-vapor-inclina] alejándolo del puntero.
- * Con reduced-motion queda el vapor estático, dibujado.
+ * Con reduced-motion queda el vapor estático, dibujado. Fuera de pantalla o con
+ * "Pausar animaciones" los tweens se pausan.
  */
 
 import { useRef } from "react";
-import { CONDICIONES, gsap, useGSAP } from "./gsap";
+import { CONDICIONES, gsap, pausarCuandoNoSeVe, useGSAP } from "./gsap";
 import { ARTE_VIEWBOX, BOCA_TAZA, VOLUTAS } from "./trazos";
 
 const ID_MASCARA = "lve-vapor-mascara";
@@ -30,42 +31,64 @@ export default function Vapor({ className }: { className?: string }) {
       const mm = gsap.matchMedia();
       mm.add(CONDICIONES.movimiento, () => {
         const volutas = gsap.utils.toArray<SVGPathElement>("[data-voluta]", ref.current);
+        const tweens: gsap.core.Tween[] = [];
         volutas.forEach((el, i) => {
           const v = VOLUTAS[i];
           if (!v) return;
           const patron = largoPatron(v.dash);
           const ritmo = 1 + i * 0.17;
 
-          gsap.fromTo(
-            el,
-            { strokeDashoffset: 0 },
-            { strokeDashoffset: -patron * 3, duration: 4.2 * ritmo, ease: "none", repeat: -1 },
+          tweens.push(
+            gsap.fromTo(
+              el,
+              { strokeDashoffset: 0 },
+              {
+                strokeDashoffset: -patron * 3,
+                duration: 4.2 * ritmo,
+                ease: "none",
+                repeat: -1,
+              },
+            ),
           );
-          gsap.to(el, {
-            morphSVG: v.b,
-            duration: 2.4 * ritmo,
-            ease: "sine.inOut",
-            yoyo: true,
-            repeat: -1,
-            delay: -i * 0.9,
-          });
-          gsap.fromTo(
-            el,
-            { x: i % 2 === 0 ? -4 : 4 },
-            {
-              x: i % 2 === 0 ? 5 : -5,
-              duration: 3.1 * ritmo,
+          tweens.push(
+            gsap.to(el, {
+              morphSVG: v.b,
+              duration: 2.4 * ritmo,
               ease: "sine.inOut",
               yoyo: true,
               repeat: -1,
-            },
+              delay: -i * 0.9,
+            }),
           );
-          gsap.fromTo(
-            el,
-            { opacity: 0.6 },
-            { opacity: 0.95, duration: 1.7 * ritmo, ease: "sine.inOut", yoyo: true, repeat: -1 },
+          tweens.push(
+            gsap.fromTo(
+              el,
+              { x: i % 2 === 0 ? -4 : 4 },
+              {
+                x: i % 2 === 0 ? 5 : -5,
+                duration: 3.1 * ritmo,
+                ease: "sine.inOut",
+                yoyo: true,
+                repeat: -1,
+              },
+            ),
+          );
+          tweens.push(
+            gsap.fromTo(
+              el,
+              { opacity: 0.6 },
+              {
+                opacity: 0.95,
+                duration: 1.7 * ritmo,
+                ease: "sine.inOut",
+                yoyo: true,
+                repeat: -1,
+              },
+            ),
           );
         });
+        // Fuera de pantalla o con "Pausar animaciones", el vapor se queda quieto
+        return pausarCuandoNoSeVe(ref.current, tweens);
       });
       return () => mm.revert();
     },

@@ -15,16 +15,24 @@
  *  - entrada (~2.5 s) que dibuja todo; el estado inicial oculto lo pone CSS
  *    (hero.module.css) para que no haya flash entre el SSR y la hidratación;
  *  - parallax al puntero (solo mouse/lápiz) y vapor que se aleja del puntero;
- *  - ScrollTrigger: al salir, el texto sube más rápido que la taza y se apaga;
+ *  - ScrollTrigger: al salir, el texto sube más rápido que la taza y se apaga
+ *    (recién cuando ya casi no se ve: el CTA no pierde contraste en pantalla);
  *  - prefers-reduced-motion: todo dibujado y quieto, sin canvas.
+ *
+ * "Pausar animaciones" (BotonMovimiento + src/lib/movimiento.ts): completa la
+ * entrada y frena los bucles. Fuera de pantalla, los bucles CSS se pausan solos
+ * (data-fuera-de-pantalla) y los de GSAP y el canvas también.
  */
 
 import clsx from "clsx";
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import Banderines from "@/components/marca/Banderines";
 import SolDeMayo from "@/components/marca/SolDeMayo";
+import { useMovimientoPausado, usePausarFueraDePantalla } from "@/components/marca/useMovimiento";
+import { movimientoPausado } from "@/lib/movimiento";
 import AficheDireccion from "./AficheDireccion";
 import AnotacionTiza from "./AnotacionTiza";
+import BotonMovimiento from "./BotonMovimiento";
 import GranosTiza from "./GranosTiza";
 import IndicadorScroll from "./IndicadorScroll";
 import PolvoDeTiza from "./PolvoDeTiza";
@@ -60,6 +68,14 @@ function Palabra({ i, children }: { i: number; children: React.ReactNode }) {
 
 export default function Hero() {
   const scope = useRef<HTMLElement>(null);
+  const entrada = useRef<gsap.core.Timeline | null>(null);
+  const pausado = useMovimientoPausado();
+  usePausarFueraDePantalla(scope);
+
+  // Al pausar en plena entrada, se completa: el dibujo queda entero y quieto.
+  useEffect(() => {
+    if (pausado) entrada.current?.progress(1);
+  }, [pausado]);
 
   useGSAP(
     () => {
@@ -70,10 +86,11 @@ export default function Hero() {
 
       /* ---------------------------------------------- entrada + scroll */
       mm.add(CONDICIONES.movimiento, () => {
-        if (performance.now() > ENTRADA_HASTA_MS) {
+        if (performance.now() > ENTRADA_HASTA_MS || movimientoPausado()) {
           gsap.set(q("[data-entra]"), { visibility: "visible" });
         } else {
           const tl = gsap.timeline({ defaults: { ease: "power3.out" } });
+          entrada.current = tl;
           const dibujar = (sel: string, en: number, duracion: number, escalonar: number) =>
             tl.fromTo(
               q(`[data-trazo="${sel}"]`),
@@ -146,15 +163,23 @@ export default function Hero() {
           tl.from(q('[data-entra="bajar"]'), { autoAlpha: 0, y: -10, duration: 0.6 }, 2.2);
         }
 
-        // Parallax de salida: el texto sube más rápido que la taza y se apaga
+        // Parallax de salida: el texto sube más rápido que la taza y se apaga.
+        // El fundido arranca recién al 60% del scroll del hero, cuando kicker,
+        // bajada y CTAs ya quedaron debajo del nav: mientras se leen, opacidad 1
+        // (el CTA blanco sobre rojo arranca en 4.54:1 y cualquier fundido lo baja de AA).
         const salida = { trigger: raiz, start: "top top", end: "bottom top", scrub: 0.4 };
+        gsap.to(q('[data-scroll="texto"]'), { y: -110, ease: "none", scrollTrigger: salida });
         gsap.to(q('[data-scroll="texto"]'), {
-          y: -110,
           opacity: 0.2,
           ease: "none",
-          scrollTrigger: salida,
+          scrollTrigger: { ...salida, start: "60% top" },
         });
         gsap.to(q('[data-scroll="arte"]'), { y: -36, ease: "none", scrollTrigger: { ...salida } });
+
+        // mm.revert() mata la timeline: que el efecto de pausa no la toque más
+        return () => {
+          entrada.current = null;
+        };
       });
 
       /* ---------------------------------------------- puntero */
@@ -325,6 +350,8 @@ export default function Hero() {
       {/* 4. Repisa e indicador de scroll */}
       <RepisaTiza />
       <IndicadorScroll className="absolute bottom-[20px] left-4 z-[3] sm:left-8 lg:left-1/2 lg:-translate-x-1/2" />
+      {/* Esquina inferior, al lado de "bajá" (en lg la flecha va al centro) */}
+      <BotonMovimiento className="absolute bottom-[26px] left-16 z-[4] sm:left-20 lg:left-12" />
     </section>
   );
 }

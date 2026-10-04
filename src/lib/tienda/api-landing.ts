@@ -21,7 +21,7 @@ export type CodigoErrorLanding =
   | "sucursal_desconocida" // 404: el id de sucursal de la URL no existe
   | "sucursal_no_disponible" // 503: la sucursal no está configurada, no responde o respondió algo inválido
   | "demasiados_intentos" // 429: límite por IP en la landing
-  | "solicitud_rechazada"; // 400: trampa antispam (honeypot o envío instantáneo)
+  | "solicitud_rechazada"; // 400: trampa antispam (honeypot o envío instantáneo); 403/415: no viene del formulario (otro origen o no JSON)
 
 export type ErrorLanding = {
   ok: false;
@@ -34,8 +34,8 @@ export type RespuestaCatalogo = { ok: true; catalogo: CatalogoPublico } | ErrorL
 
 /** Body que manda el formulario. `hp` es el honeypot (debe ir vacío) y `t0` el Date.now() de cuando se mostró el formulario. */
 export type CrearVentaLandingBody = Omit<CrearVentaBody, "origen"> & {
-  hp?: string;
-  t0?: number;
+  hp: string;
+  t0: number;
 };
 
 export type RespuestaCrearVenta =

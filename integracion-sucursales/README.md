@@ -199,7 +199,7 @@ La pantalla es **Más → Tienda web** (`/tienda`). Se actualiza sola cada 30 se
 | **Por cobrar** | Ventas esperando la transferencia. Si quedan menos de 6 h para que venzan, se resaltan en ámbar. | Socio o encargado. Cuando llega el comprobante **por el monto exacto**, tocan **Marcar pagado** y confirman. Si el cliente se arrepiente, **Cancelar** (el motivo es opcional). |
 | **Para entregar** | Ya pagadas. | Cualquiera del equipo, barista incluido. Cuando el cliente pasa, le piden el **código** (`WEB-24-0042`) y tocan **Entregado**. Un socio o encargado puede **Cancelar**, con motivo obligatorio: hay que devolver la plata. |
 | **Entregados** | Ventas cerradas. | Nadie. |
-| **Cancelados** | Canceladas por el equipo o vencidas sin pago ("venció sin pago"). | Nadie. |
+| **Cancelados** | Canceladas por el equipo o vencidas sin pago ("venció sin pago"). | Las canceladas por el equipo: nadie. Las vencidas: un socio o encargado puede tocar **Marcar pagado (llegó el comprobante)** y confirmar, si el cliente transfirió y el comprobante se vio tarde. La venta pasa a **Para entregar** y el cliente la ve pagada en su ticket. |
 
 **En cada tarjeta:**
 
@@ -215,23 +215,26 @@ La pantalla es **Más → Tienda web** (`/tienda`). Se actualiza sola cada 30 se
 
 - **Push:** cada venta nueva manda **"Nueva venta web"** a socios y encargados. Se configura en Configuración → Notificaciones, como cualquier otro evento.
 - **Auditoría:** cada cobro, entrega, cancelación y cambio de ajustes queda registrado en **Auditoría**, módulo "Tienda web".
-- **Vencimiento:** si un cliente transfiere **después** de que su pedido venció, la venta ya está cancelada y no se puede revivir. Pedile que haga el pedido de nuevo en la web, o resolvelo a mano.
+- **Vencimiento:** cuando vence el plazo, el pedido pasa solo a **Cancelados** ("venció sin pago"), aunque el cliente haya transferido y nadie haya visto el comprobante todavía. Si llega el comprobante **por el monto exacto**, buscá la venta en **Cancelados** y tocá **Marcar pagado (llegó el comprobante)**: vuelve a **Para entregar** con el mismo código, el mismo precio y el mismo total, y queda en Auditoría que había vencido. Esto se puede solo con las vencidas: una venta que canceló el equipo no se revive. Si preferís no tomar una transferencia muy tardía, devolvela y pedile que haga el pedido de nuevo.
 
 ---
 
 ## Seguridad
 
 - **Secreto compartido.** Cada sucursal tiene su propio `TIENDA_API_SECRET`. Se compara en tiempo constante (`timingSafeEqual` sobre sha-256). Si falta, las rutas responden `503`: nunca quedan abiertas.
-- **Token del ticket.** Se genera con `randomBytes(32)` y se le devuelve al cliente una sola vez. En la base se guarda **solo su sha-256**: con un volcado de la base no se puede consultar ningún pedido. Para consultar hacen falta el secreto de la landing **y** el token.
+- **Token del ticket.** Se genera con `randomBytes(32)` y se le devuelve al cliente una sola vez. En la base se guarda **solo su sha-256**: un volcado de la base no revela los tokens que ya tienen los clientes. Para consultar hacen falta el secreto de la landing **y** el token.
+- **Clave de idempotencia.** Repetir un pedido con la misma `idempotency_key` devuelve la misma venta con un token nuevo, pero **solo si coincide el teléfono** (últimos 10 dígitos). Si no coincide, responde `datos_invalidos` y no toca el token del cliente. Ni la clave ni el hash del token se le muestran al equipo: `authenticated` lee `tienda_ventas` por columnas, sin `token_hash` ni `idempotency_key`.
 - **El mismo 404 para todo.** Un código inexistente y un token incorrecto dan la misma respuesta, y la comparación tarda lo mismo en los dos casos.
 - **La respuesta pública no lleva datos personales.** Del nombre va solo el de pila. Nunca van el teléfono, el email, la nota ni quién movió la venta. Los logs del servidor tampoco guardan datos del cliente, ni el token, ni el secreto.
 - **El precio lo pone la sucursal.** La landing manda producto, cantidad y opciones. El precio y el total salen siempre de `tienda_productos`.
 - **RLS.**
-  - Las tablas `tienda_*` las leen solo socio, encargado y barista activos.
+  - Las tablas `tienda_*` las leen solo socio, encargado y barista activos (de `tienda_ventas`, todas las columnas menos `token_hash` e `idempotency_key`).
   - Nadie escribe desde el navegador: escriben las rutas del servidor con `service_role`.
   - Las funciones las ejecuta solo `service_role`.
 - **Permisos en la app.**
-  - Cobrar y cancelar: socio y encargado.
+  - Las rutas del equipo (`/api/tienda/config`, `/api/tienda/ventas` y `/api/tienda/ventas/[id]`) exigen sesión, rol **y** perfil activo (`profiles.is_active`). Alguien dado de baja en `/equipo` recibe `403` aunque vuelva a iniciar sesión.
+  - Dar de baja en `/equipo` no bloquea la cuenta de Auth: la contraseña sigue sirviendo para el resto de la app. Al dar de baja a alguien, bloqueale también la cuenta (o cambiale la contraseña) en Supabase → Authentication, y si era encargado revisá el alias y el CBU en **Ajustes**.
+  - Cobrar y cancelar: socio y encargado. También cobrar una vencida (Cancelados → **Marcar pagado**).
   - Entregar: también barista.
   - Ajustes: socio y encargado.
   - Cada cambio de estado se aplica solo si la venta sigue en el estado que se vio. Si dos personas tocan a la vez, la segunda recibe "Alguien más cambió la venta" y no se pisa nada.
@@ -261,7 +264,7 @@ Si además querés **borrar la base**:
 ```
 supabase/migrations/20261004_tienda_web.sql      (copia de sql/20261004_tienda_web.sql)
 src/lib/tienda/tipos.ts          tipos del contrato v1 + filas de las tablas + API del staff
-src/lib/tienda/auth.ts           verificarSecreto / verificarVersion / protegerRutaPublica
+src/lib/tienda/auth.ts           verificarSecreto / verificarVersion / protegerRutaPublica / requireRolActivo (staff)
 src/lib/tienda/validar.ts        validarCrearVenta (equivalente a CrearVentaBodySchema, sin zod)
 src/lib/tienda/config.ts         app_settings 'tienda', prefijo, productos, validación de ajustes
 src/lib/tienda/ventas.ts         token + hash, carga de ventas, mapeo a VentaPublica / VentaStaff

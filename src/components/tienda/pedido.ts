@@ -52,7 +52,9 @@ const MENSAJES: Partial<Record<CodigoErrorLanding, string>> = {
     "El café no está disponible en esta sucursal en este momento. Probá en la otra o más tarde.",
   demasiados_pedidos:
     "Ya tenés pedidos pendientes con este número. Pagá o esperá a que venzan antes de hacer uno nuevo.",
-  demasiados_intentos: "Hiciste muchos intentos seguidos. Esperá un minuto y probá de nuevo.",
+  // El límite por IP es una ventana de 10 minutos (ventas/route.ts): "un minuto" no alcanza.
+  demasiados_intentos:
+    "Hiciste muchos intentos seguidos. Esperá unos minutos (hasta 10) y probá de nuevo.",
   solicitud_rechazada:
     "No pudimos tomar el pedido. Esperá unos segundos y probá de nuevo; si sigue pasando, recargá la página.",
   sucursal_desconocida: "Esa sucursal no existe. Elegí una de las dos de la lista.",
@@ -67,6 +69,24 @@ export function mensajeDeError(codigo: CodigoErrorLanding | undefined, error?: s
     return MENSAJES[codigo]!;
   }
   return error || "Algo salió mal. Probá de nuevo en un rato.";
+}
+
+/* ------------------------------------------------------------------ */
+/* Red                                                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Señal que aborta el fetch a los `ms` milisegundos (con mala señal el pedido no
+ * queda colgado). `AbortSignal.timeout` no existe en iOS < 16: ahí se arma con
+ * AbortController + setTimeout. Llamá a `limpiar()` cuando termine el fetch.
+ */
+export function senalConTimeout(ms: number): { signal: AbortSignal; limpiar: () => void } {
+  if (typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function") {
+    return { signal: AbortSignal.timeout(ms), limpiar: () => {} };
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  return { signal: controller.signal, limpiar: () => clearTimeout(timer) };
 }
 
 /* ------------------------------------------------------------------ */

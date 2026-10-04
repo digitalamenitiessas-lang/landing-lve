@@ -179,6 +179,16 @@ export function crearVentaMock(
   const codigoPrevio = e.porIdempotencia.get(pedido.idempotency_key);
   const previa = codigoPrevio ? e.ventas.get(codigoPrevio) : undefined;
   if (previa) {
+    // Igual que tienda_crear_venta del kit: solo es repetición si es el mismo teléfono;
+    // si no, quien conozca la clave podría robarle el token al cliente.
+    const telefonoNorm = pedido.cliente.telefono.replace(/\D/g, "").slice(-10);
+    if (telefonoNorm !== previa.telefono_norm) {
+      return falla(
+        "datos_invalidos",
+        "Esta clave ya se usó para otro pedido. Recargá la página y probá de nuevo.",
+        "idempotency_key",
+      );
+    }
     aplicarVencimiento(previa);
     const token = nuevoToken();
     previa.token_hash = hashToken(token);

@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Anton, Barlow, Caveat } from "next/font/google";
+import { SCRIPT_MOVIMIENTO } from "@/lib/movimiento";
 import "./globals.css";
 
 const anton = Anton({
@@ -52,7 +53,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     <html
       lang="es-AR"
       className={`${anton.variable} ${barlow.variable} ${caveat.variable} antialiased`}
+      // El script del <head> agrega la clase "js" y data-movimiento antes de hidratar.
+      suppressHydrationWarning
     >
+      <head>
+        {/* Antes del primer pintado: clase "js" (entrada del hero) y "Pausar animaciones" guardado */}
+        <script dangerouslySetInnerHTML={{ __html: SCRIPT_MOVIMIENTO }} />
+      </head>
       <body className="min-h-dvh">{children}</body>
     </html>
   );

@@ -147,8 +147,14 @@ export function EstadoCancelado({
 }) {
   const cancelado = venta.cancelado_at ? Date.parse(venta.cancelado_at) : NaN;
   const vence = Date.parse(venta.vence_at);
-  // Si se canceló después del vencimiento (o casi), fue porque venció.
-  const vencio = !Number.isNaN(cancelado) && !Number.isNaN(vence) && cancelado >= vence - 60_000;
+  // Llegó a figurar pagado y después se canceló (la sucursal lo dio de baja): no es
+  // un vencimiento, aunque haya sido después de vence_at.
+  const habiaPagado = Boolean(venta.pagado_at);
+  // Sin pago y cancelado después del vencimiento (o casi): fue porque venció la reserva.
+  // Ojo: "sin pago" es "sin pago confirmado"; puede que el cliente haya transferido a tiempo.
+  const vencio =
+    !habiaPagado && !Number.isNaN(cancelado) && !Number.isNaN(vence) && cancelado >= vence - 60_000;
+  const canal = whatsapp ? " por WhatsApp" : " por Instagram";
 
   return (
     <section aria-labelledby="titulo-cancelado" className="mt-8">
@@ -158,9 +164,9 @@ export function EstadoCancelado({
       <p className="mt-2 text-lg">
         {vencio ? (
           <>
-            No nos llegó el pago antes del{" "}
-            <time dateTime={venta.vence_at}>{formatFechaHora(venta.vence_at)}</time>, así que
-            liberamos la reserva.
+            La reserva venció el{" "}
+            <time dateTime={venta.vence_at}>{formatFechaHora(venta.vence_at)}</time> sin que
+            confirmáramos el pago.
           </>
         ) : venta.cancelado_at ? (
           <>
@@ -172,8 +178,11 @@ export function EstadoCancelado({
         )}
       </p>
       <p className="mt-2 text-base text-tinta-suave">
-        Si ya habías transferido, escribinos
-        {whatsapp ? " por WhatsApp" : " por Instagram"} con el comprobante y lo resolvemos.
+        {vencio
+          ? `Si transferiste antes de esa fecha, escribinos${canal} con el comprobante y lo confirmamos igual.`
+          : habiaPagado
+            ? `Si ya habías pagado, escribinos${canal} y lo resolvemos.`
+            : `Si ya habías transferido, escribinos${canal} con el comprobante y lo resolvemos.`}
       </p>
       <div className="mt-5 flex flex-col gap-3 sm:flex-row">
         <Link href="/#cafe" className="boton boton-rojo w-full sm:w-auto">
@@ -184,7 +193,9 @@ export function EstadoCancelado({
             whatsapp
               ? linkWhatsApp(
                   whatsapp,
-                  `¡Hola, La Vieja Escuela! Mi pedido *${venta.codigo}* figura cancelado y ya había transferido. Te mando el comprobante.`,
+                  habiaPagado
+                    ? `¡Hola, La Vieja Escuela! Mi pedido *${venta.codigo}* figura cancelado y ya lo había pagado. ¿Me ayudan a resolverlo?`
+                    : `¡Hola, La Vieja Escuela! Mi pedido *${venta.codigo}* figura cancelado y ya había transferido. Te mando el comprobante.`,
                 )
               : INSTAGRAM_URL
           }
@@ -197,7 +208,7 @@ export function EstadoCancelado({
           ) : (
             <IconoInstagram className="size-5" />
           )}
-          Ya había transferido
+          {habiaPagado ? "Ya lo había pagado" : "Ya había transferido"}
           <span className="sr-only">
             {whatsapp ? " (se abre WhatsApp)" : " (se abre Instagram)"}
           </span>
