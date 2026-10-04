@@ -1,0 +1,3616 @@
+From 3d257dcefc545f87a2bc356b1fef749e7a13b846 Mon Sep 17 00:00:00 2001
+From: luciano bonilla <lucianobonilla27@gmail.com>
+Date: Sun, 4 Oct 2026 12:41:52 -0300
+Subject: [PATCH] =?UTF-8?q?feat(tienda):=20venta=20de=20caf=C3=A9=20desde?=
+ =?UTF-8?q?=20la=20landing=20(contrato=20v1)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+La landing de La Vieja Escuela vende café (1/4 kg) y crea cada venta en el
+sistema de la sucursal donde se compró. Esto agrega:
+
+- Migración 20261004_tienda_web.sql: tienda_productos, tienda_ventas,
+  tienda_venta_items, tienda_crear_venta() y tienda_vencer_pendientes()
+  (solo service_role; RLS de lectura para socio/encargado/barista).
+- API pública para la landing, protegida con TIENDA_API_SECRET:
+  GET  /api/tienda/publico/catalogo
+  POST /api/tienda/publico/ventas
+  GET  /api/tienda/publico/ventas/[codigo] (header X-Venta-Token)
+- API del equipo: /api/tienda/ventas, /api/tienda/ventas/[id] y
+  /api/tienda/config.
+- Pantalla /tienda: Por cobrar, Para entregar, Entregados, Cancelados y
+  Ajustes de la tienda (precio, alias/CBU, WhatsApp, retiro, reserva).
+- Push nuevo 'tienda_venta_nueva', módulo de auditoría 'tienda' y
+  entrada "Tienda web" en el menú.
+
+Variables nuevas: TIENDA_API_SECRET y TIENDA_PREFIJO_CODIGO.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .env.example                                  |   8 +
+ src/app/(app)/auditoria/page.tsx              |   3 +-
+ .../tienda/_components/AjustesTienda.tsx      | 387 +++++++++++++
+ .../(app)/tienda/_components/VentaCard.tsx    | 276 +++++++++
+ src/app/(app)/tienda/_components/formato.ts   |  74 +++
+ src/app/(app)/tienda/_components/use-ahora.ts |  16 +
+ src/app/(app)/tienda/page.tsx                 | 220 ++++++++
+ src/app/api/tienda/config/route.ts            | 124 +++++
+ src/app/api/tienda/publico/catalogo/route.ts  |  42 ++
+ .../tienda/publico/ventas/[codigo]/route.ts   |  58 ++
+ src/app/api/tienda/publico/ventas/route.ts    |  81 +++
+ src/app/api/tienda/ventas/[id]/route.ts       | 151 +++++
+ src/app/api/tienda/ventas/route.ts            |  75 +++
+ src/components/layout/BottomNav.tsx           |   4 +
+ src/components/layout/TopBar.tsx              |   1 +
+ src/lib/audit.ts                              |   2 +-
+ src/lib/push/notify-event.ts                  |   7 +
+ src/lib/tienda/auth.ts                        |  75 +++
+ src/lib/tienda/config.ts                      | 408 ++++++++++++++
+ src/lib/tienda/db.ts                          |  30 +
+ src/lib/tienda/respuestas.ts                  |  52 ++
+ src/lib/tienda/tipos.ts                       | 342 ++++++++++++
+ src/lib/tienda/validar.ts                     | 160 ++++++
+ src/lib/tienda/ventas.ts                      | 213 +++++++
+ supabase/migrations/20261004_tienda_web.sql   | 523 ++++++++++++++++++
+ 25 files changed, 3330 insertions(+), 2 deletions(-)
+ create mode 100644 src/app/(app)/tienda/_components/AjustesTienda.tsx
+ create mode 100644 src/app/(app)/tienda/_components/VentaCard.tsx
+ create mode 100644 src/app/(app)/tienda/_components/formato.ts
+ create mode 100644 src/app/(app)/tienda/_components/use-ahora.ts
+ create mode 100644 src/app/(app)/tienda/page.tsx
+ create mode 100644 src/app/api/tienda/config/route.ts
+ create mode 100644 src/app/api/tienda/publico/catalogo/route.ts
+ create mode 100644 src/app/api/tienda/publico/ventas/[codigo]/route.ts
+ create mode 100644 src/app/api/tienda/publico/ventas/route.ts
+ create mode 100644 src/app/api/tienda/ventas/[id]/route.ts
+ create mode 100644 src/app/api/tienda/ventas/route.ts
+ create mode 100644 src/lib/tienda/auth.ts
+ create mode 100644 src/lib/tienda/config.ts
+ create mode 100644 src/lib/tienda/db.ts
+ create mode 100644 src/lib/tienda/respuestas.ts
+ create mode 100644 src/lib/tienda/tipos.ts
+ create mode 100644 src/lib/tienda/validar.ts
+ create mode 100644 src/lib/tienda/ventas.ts
+ create mode 100644 supabase/migrations/20261004_tienda_web.sql
+
+diff --git a/.env.example b/.env.example
+index 44a52c4..3546e9d 100644
+--- a/.env.example
++++ b/.env.example
+@@ -46,3 +46,11 @@ EMAIL_FROM=Sala de Profes <info@laviejaescuelabar.com.ar>
+ # --- IA ----------------------------------------------------------------------
+ OPENROUTER_API_KEY=
+ ANTHROPIC_API_KEY=
++
++# --- Tienda web (venta de café desde la landing) ----------------------------
++# Secreto compartido con la landing (SUCURSAL_24_API_SECRET allá). Mínimo 32
++# caracteres; sin él las rutas /api/tienda/publico/* responden 503.
++# Generar uno: openssl rand -hex 32
++TIENDA_API_SECRET=
++# Prefijo de los códigos de pedido de esta sucursal (WEB-24-0001).
++TIENDA_PREFIJO_CODIGO=WEB-24
+diff --git a/src/app/(app)/auditoria/page.tsx b/src/app/(app)/auditoria/page.tsx
+index a89cb8c..7d5e3df 100644
+--- a/src/app/(app)/auditoria/page.tsx
++++ b/src/app/(app)/auditoria/page.tsx
+@@ -9,7 +9,7 @@ import {
+   Bell, FileText, ChevronDown, Loader2, Search,
+   LogIn, LogOut, Pencil, Plus, ArrowRightLeft, ArrowLeft,
+   Wine, ChefHat, Check, ClipboardCheck, Truck,
+-  TrendingUp, TrendingDown,
++  TrendingUp, TrendingDown, ShoppingBag,
+ } from 'lucide-react'
+ import { useProfileContext } from '@/lib/hooks/use-profile'
+ import { createClient } from '@/lib/supabase/client'
+@@ -45,6 +45,7 @@ const MODULE_CONFIG: Record<string, { label: string; icon: typeof Shield; color:
+   auth: { label: 'Acceso', icon: LogIn, color: '#006d5a', bg: '#e8f5f1' },
+   produccion: { label: 'Producción', icon: ChefHat, color: '#006d5a', bg: '#e8f5f1' },
+   proveedores: { label: 'Proveedores', icon: Truck, color: '#d4943a', bg: '#fdf6ec' },
++  tienda: { label: 'Tienda web', icon: ShoppingBag, color: '#006d5a', bg: '#e8f5f1' },
+ }
+ 
+ const ACTION_ICONS: Record<string, typeof Shield> = {
+diff --git a/src/app/(app)/tienda/_components/AjustesTienda.tsx b/src/app/(app)/tienda/_components/AjustesTienda.tsx
+new file mode 100644
+index 0000000..85cff00
+--- /dev/null
++++ b/src/app/(app)/tienda/_components/AjustesTienda.tsx
+@@ -0,0 +1,387 @@
++'use client'
++
++import { useId, useState, type ReactNode } from 'react'
++import useSWR from 'swr'
++import { AlertTriangle, Check, KeyRound, Loader2, Save } from 'lucide-react'
++import { apiFetcher } from '@/lib/swr/fetchers'
++import { errorToast, successToast } from '@/lib/toast-helpers'
++import { cn } from '@/lib/utils'
++import type { ConfigPatchBody, ProductoStaff, RespuestaConfigStaff } from '@/lib/tienda/tipos'
++import { fmtPesos } from './formato'
++
++// ---------------------------------------------------------------------------
++// Ajustes de la tienda web (solo socio y encargado):
++// interruptor de venta, datos de pago, WhatsApp, retiro, reserva, mensaje y,
++// por producto, precio / disponible / máximo por pedido.
++// ---------------------------------------------------------------------------
++
++const INPUT =
++  'h-11 w-full rounded-xl border border-[#ebe6df] bg-white px-3 text-sm text-[#3d2c24] placeholder:text-[#a39e97] focus:border-[#006d5a] focus:outline-none focus:ring-1 focus:ring-[#006d5a]'
++
++/** "9.500" / "9500" / "9500,50" / "$ 9.500" → 9500 | 9500.5. null si no se entiende. */
++function parsePesos(v: string): number | null {
++  let t = v.replace(/[$\s]/g, '')
++  if (t === '') return 0
++  if (t.includes(',')) t = t.replace(/\./g, '').replace(',', '.')
++  else if (/^\d{1,3}(\.\d{3})+$/.test(t)) t = t.replace(/\./g, '')
++  const n = Number(t)
++  return Number.isFinite(n) && n >= 0 ? n : null
++}
++
++function Campo({ label, ayuda, children }: { label: string; ayuda?: string; children: (id: string) => ReactNode }) {
++  const id = useId()
++  return (
++    <div>
++      <label htmlFor={id} className="mb-1 block text-[11px] font-semibold uppercase tracking-wider text-[#7d6c64]">
++        {label}
++      </label>
++      {children(id)}
++      {ayuda && <p className="mt-1 text-[11px] text-[#a39e97]">{ayuda}</p>}
++    </div>
++  )
++}
++
++function Interruptor({
++  activo, onChange, label, descripcion,
++}: { activo: boolean; onChange: (v: boolean) => void; label: string; descripcion?: string }) {
++  return (
++    <button
++      type="button"
++      role="switch"
++      aria-checked={activo}
++      onClick={() => onChange(!activo)}
++      className="flex min-h-11 w-full items-center gap-3 text-left"
++    >
++      <span className="min-w-0 flex-1">
++        <span className="block text-sm font-semibold text-[#3d2c24]">{label}</span>
++        {descripcion && <span className="block text-[11px] text-[#a39e97]">{descripcion}</span>}
++      </span>
++      <span
++        aria-hidden
++        className={cn(
++          'relative h-7 w-12 shrink-0 rounded-full transition-colors',
++          activo ? 'bg-[#006d5a]' : 'bg-[#d9d3cb]',
++        )}
++      >
++        <span
++          className={cn(
++            'absolute top-1 size-5 rounded-full bg-white shadow transition-transform',
++            activo ? 'translate-x-6' : 'translate-x-1',
++          )}
++        />
++      </span>
++    </button>
++  )
++}
++
++type ProductoForm = { id: string; nombre: string; presentacion: string | null; precio: string; disponible: boolean; max: string }
++
++function Formulario({ datos, onGuardado }: { datos: RespuestaConfigStaff; onGuardado: (d: RespuestaConfigStaff) => void }) {
++  const c = datos.config
++  const [ventaHabilitada, setVentaHabilitada] = useState(c.venta_habilitada)
++  const [mensaje, setMensaje] = useState(c.mensaje ?? '')
++  const [alias, setAlias] = useState(c.pago.alias ?? '')
++  const [cbu, setCbu] = useState(c.pago.cbu ?? '')
++  const [titular, setTitular] = useState(c.pago.titular ?? '')
++  const [banco, setBanco] = useState(c.pago.banco ?? '')
++  const [cuit, setCuit] = useState(c.pago.cuit ?? '')
++  const [whatsapp, setWhatsapp] = useState(c.whatsapp ?? '')
++  const [direccion, setDireccion] = useState(c.retiro.direccion ?? '')
++  const [horario, setHorario] = useState(c.retiro.horario ?? '')
++  const [indicaciones, setIndicaciones] = useState(c.retiro.indicaciones ?? '')
++  const [horas, setHoras] = useState(String(c.vencimiento_horas))
++  const [productos, setProductos] = useState<ProductoForm[]>(() =>
++    datos.productos.map((p: ProductoStaff) => ({
++      id: p.id,
++      nombre: p.nombre,
++      presentacion: p.presentacion,
++      precio: p.precio > 0 ? String(p.precio) : '',
++      disponible: p.disponible,
++      max: String(p.max_por_pedido),
++    })),
++  )
++  const [guardando, setGuardando] = useState(false)
++  const [error, setError] = useState<string | null>(null)
++
++  function cambiarProducto(id: string, cambios: Partial<ProductoForm>) {
++    setProductos((ps) => ps.map((p) => (p.id === id ? { ...p, ...cambios } : p)))
++  }
++
++  async function guardar() {
++    setError(null)
++    const horasNum = Number(horas)
++    const productosBody: NonNullable<ConfigPatchBody['productos']> = []
++    for (const p of productos) {
++      const precio = parsePesos(p.precio)
++      if (precio === null) {
++        setError(`Revisá el precio de "${p.nombre}": solo números (por ejemplo 9500).`)
++        return
++      }
++      productosBody.push({ id: p.id, precio, disponible: p.disponible, max_por_pedido: Number(p.max) })
++    }
++    const body: ConfigPatchBody = {
++      config: {
++        venta_habilitada: ventaHabilitada,
++        mensaje: mensaje.trim() || null,
++        pago: {
++          alias: alias.trim() || null,
++          cbu: cbu.trim() || null,
++          titular: titular.trim() || null,
++          banco: banco.trim() || null,
++          cuit: cuit.trim() || null,
++        },
++        whatsapp: whatsapp.trim() || null,
++        retiro: {
++          direccion: direccion.trim() || null,
++          horario: horario.trim() || null,
++          indicaciones: indicaciones.trim() || null,
++        },
++        vencimiento_horas: Number.isFinite(horasNum) ? horasNum : 0,
++      },
++      productos: productosBody,
++    }
++
++    setGuardando(true)
++    try {
++      const res = await fetch('/api/tienda/config', {
++        method: 'PATCH',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify(body),
++      })
++      const json = await res.json().catch(() => ({}))
++      if (!res.ok) {
++        setError(json.error ?? 'No se pudieron guardar los ajustes.')
++        return
++      }
++      const nuevos = json as RespuestaConfigStaff
++      onGuardado(nuevos)
++      successToast(
++        'Ajustes guardados',
++        nuevos.config.venta_habilitada ? 'La venta web está activa.' : 'La venta web está pausada.',
++      )
++    } catch (err) {
++      errorToast('No se pudieron guardar los ajustes', err)
++    } finally {
++      setGuardando(false)
++    }
++  }
++
++  return (
++    <form
++      onSubmit={(e) => {
++        e.preventDefault()
++        void guardar()
++      }}
++      className="space-y-4"
++    >
++      {/* Estado de la conexión con la landing */}
++      <div className="space-y-1.5 rounded-xl bg-[#faf8f5] px-3 py-2.5 text-[11px] text-[#7d6c64]">
++        <p className="flex items-center gap-1.5">
++          <KeyRound className="size-3.5 shrink-0" aria-hidden />
++          {datos.secreto_configurado ? (
++            <span>Conexión con la web configurada (TIENDA_API_SECRET cargado).</span>
++          ) : (
++            <span className="font-semibold text-[#ea504c]">
++              Falta TIENDA_API_SECRET en Vercel: la web no puede crear ventas en esta sucursal.
++            </span>
++          )}
++        </p>
++        <p>
++          Los pedidos salen con el código <span className="font-mono font-semibold text-[#3d2c24]">{datos.prefijo}-0001</span>.
++        </p>
++      </div>
++
++      <section aria-labelledby="ajustes-venta" className="rounded-2xl bg-white p-4 ring-1 ring-[#ebe6df]">
++        <h3 id="ajustes-venta" className="section-label mb-2">Venta web</h3>
++        <Interruptor
++          activo={ventaHabilitada}
++          onChange={setVentaHabilitada}
++          label={ventaHabilitada ? 'Venta activa' : 'Venta pausada'}
++          descripcion="Si la pausás, la web muestra el café pero no deja comprar."
++        />
++        <div className="mt-3">
++          <Campo label="Aviso arriba del formulario" ayuda='Opcional. Ej.: "Esta semana solo en grano".'>
++            {(id) => (
++              <textarea
++                id={id}
++                value={mensaje}
++                onChange={(e) => setMensaje(e.target.value)}
++                maxLength={280}
++                rows={2}
++                className={cn(INPUT, 'h-auto py-2')}
++              />
++            )}
++          </Campo>
++        </div>
++      </section>
++
++      <section aria-labelledby="ajustes-productos" className="rounded-2xl bg-white p-4 ring-1 ring-[#ebe6df]">
++        <h3 id="ajustes-productos" className="section-label mb-2">Productos</h3>
++        {productos.length === 0 && (
++          <p className="text-xs text-[#a39e97]">No hay productos cargados. Revisá que se haya aplicado la migración.</p>
++        )}
++        <div className="space-y-4">
++          {productos.map((p) => {
++            const precio = parsePesos(p.precio)
++            return (
++              <div key={p.id} className="space-y-2 border-t border-[#f5f0ea] pt-3 first:border-t-0 first:pt-0">
++                <p className="text-sm font-semibold text-[#3d2c24]">
++                  {p.nombre}
++                  {p.presentacion && <span className="font-normal text-[#a39e97]"> · {p.presentacion}</span>}
++                </p>
++                <div className="grid grid-cols-2 gap-2">
++                  <Campo label="Precio" ayuda={precio && precio > 0 ? fmtPesos(precio) : 'Sin precio no se vende'}>
++                    {(id) => (
++                      <input
++                        id={id}
++                        inputMode="decimal"
++                        value={p.precio}
++                        onChange={(e) => cambiarProducto(p.id, { precio: e.target.value })}
++                        placeholder="9500"
++                        className={INPUT}
++                      />
++                    )}
++                  </Campo>
++                  <Campo label="Máx. por pedido">
++                    {(id) => (
++                      <input
++                        id={id}
++                        type="number"
++                        inputMode="numeric"
++                        min={1}
++                        max={20}
++                        value={p.max}
++                        onChange={(e) => cambiarProducto(p.id, { max: e.target.value })}
++                        className={INPUT}
++                      />
++                    )}
++                  </Campo>
++                </div>
++                <Interruptor
++                  activo={p.disponible}
++                  onChange={(v) => cambiarProducto(p.id, { disponible: v })}
++                  label={p.disponible ? 'Hay stock' : 'Sin stock'}
++                  descripcion="Apagalo cuando se termine: en la web aparece como agotado."
++                />
++              </div>
++            )
++          })}
++        </div>
++      </section>
++
++      <section aria-labelledby="ajustes-pago" className="rounded-2xl bg-white p-4 ring-1 ring-[#ebe6df]">
++        <h3 id="ajustes-pago" className="section-label mb-2">Dónde transfieren</h3>
++        <div className="space-y-3">
++          <Campo label="Alias" ayuda="Lo que el cliente copia en la app del banco.">
++            {(id) => (
++              <input id={id} value={alias} onChange={(e) => setAlias(e.target.value)} autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="la.vieja.escuela" className={INPUT} />
++            )}
++          </Campo>
++          <Campo label="CBU / CVU" ayuda="22 números. Opcional si hay alias.">
++            {(id) => (
++              <input id={id} value={cbu} onChange={(e) => setCbu(e.target.value)} inputMode="numeric" className={cn(INPUT, 'font-mono')} />
++            )}
++          </Campo>
++          <Campo label="Titular">
++            {(id) => <input id={id} value={titular} onChange={(e) => setTitular(e.target.value)} className={INPUT} />}
++          </Campo>
++          <div className="grid grid-cols-2 gap-2">
++            <Campo label="Banco">
++              {(id) => <input id={id} value={banco} onChange={(e) => setBanco(e.target.value)} className={INPUT} />}
++            </Campo>
++            <Campo label="CUIT">
++              {(id) => <input id={id} value={cuit} onChange={(e) => setCuit(e.target.value)} inputMode="numeric" className={INPUT} />}
++            </Campo>
++          </div>
++        </div>
++      </section>
++
++      <section aria-labelledby="ajustes-whatsapp" className="rounded-2xl bg-white p-4 ring-1 ring-[#ebe6df]">
++        <h3 id="ajustes-whatsapp" className="section-label mb-2">Comprobantes y retiro</h3>
++        <div className="space-y-3">
++          <Campo label="WhatsApp para comprobantes" ayuda="Con 549 adelante y sin el 15: 5493815551234.">
++            {(id) => (
++              <input id={id} value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} inputMode="numeric" placeholder="5493815551234" className={cn(INPUT, 'font-mono')} />
++            )}
++          </Campo>
++          <Campo label="Dirección de retiro">
++            {(id) => <input id={id} value={direccion} onChange={(e) => setDireccion(e.target.value)} className={INPUT} />}
++          </Campo>
++          <Campo label="Horario de retiro" ayuda='Ej.: "Lunes a sábado de 8 a 20".'>
++            {(id) => <input id={id} value={horario} onChange={(e) => setHorario(e.target.value)} className={INPUT} />}
++          </Campo>
++          <Campo label="Indicaciones" ayuda='Ej.: "Pedilo en la barra con tu código".'>
++            {(id) => (
++              <textarea id={id} value={indicaciones} onChange={(e) => setIndicaciones(e.target.value)} maxLength={300} rows={2} className={cn(INPUT, 'h-auto py-2')} />
++            )}
++          </Campo>
++          <Campo label="Horas de reserva sin pagar" ayuda="Pasado ese tiempo el pedido se cancela solo.">
++            {(id) => (
++              <input id={id} type="number" inputMode="numeric" min={1} max={720} value={horas} onChange={(e) => setHoras(e.target.value)} className={INPUT} />
++            )}
++          </Campo>
++        </div>
++      </section>
++
++      <div aria-live="polite">
++        {error && (
++          <p className="flex items-start gap-1.5 rounded-xl bg-[#fef2f2] px-3 py-2 text-xs font-semibold text-[#ea504c]">
++            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
++            {error}
++          </p>
++        )}
++      </div>
++
++      <button
++        type="submit"
++        disabled={guardando}
++        className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#3d2c24] text-sm font-semibold text-white active:scale-[0.98] disabled:opacity-60"
++      >
++        {guardando ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Save className="size-4" aria-hidden />}
++        Guardar ajustes
++      </button>
++    </form>
++  )
++}
++
++export function AjustesTienda() {
++  const { data, error, isLoading, mutate } = useSWR<RespuestaConfigStaff>('/api/tienda/config', apiFetcher, {
++    revalidateOnFocus: false,
++  })
++  const [version, setVersion] = useState(0)
++
++  if (isLoading) {
++    return (
++      <div className="flex justify-center py-8">
++        <Loader2 className="size-5 animate-spin text-[#006d5a]" aria-label="Cargando ajustes" />
++      </div>
++    )
++  }
++  if (error || !data) {
++    return (
++      <p className="flex items-start gap-1.5 rounded-xl bg-[#fef2f2] px-3 py-2 text-xs font-semibold text-[#ea504c]">
++        <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
++        {error instanceof Error ? error.message : 'No se pudieron cargar los ajustes.'}
++      </p>
++    )
++  }
++
++  return (
++    <div>
++      {data.config.venta_habilitada && (
++        <p className="mb-3 flex items-center gap-1.5 text-xs font-semibold text-[#006d5a]">
++          <Check className="size-3.5" aria-hidden />
++          La venta web está activa.
++        </p>
++      )}
++      <Formulario
++        key={version}
++        datos={data}
++        onGuardado={(nuevos) => {
++          void mutate(nuevos, { revalidate: false })
++          setVersion((v) => v + 1)
++        }}
++      />
++    </div>
++  )
++}
+diff --git a/src/app/(app)/tienda/_components/VentaCard.tsx b/src/app/(app)/tienda/_components/VentaCard.tsx
+new file mode 100644
+index 0000000..b4a4433
+--- /dev/null
++++ b/src/app/(app)/tienda/_components/VentaCard.tsx
+@@ -0,0 +1,276 @@
++'use client'
++
++import { useState } from 'react'
++import {
++  Check, Clock, Loader2, MessageCircle, Package, Phone, StickyNote, X, Ban, AlertTriangle,
++} from 'lucide-react'
++import { cn } from '@/lib/utils'
++import type { VentaStaff } from '@/lib/tienda/tipos'
++import {
++  ESTADO_UI, fmtFechaHora, fmtPesos, fmtRelativo, linkTelefono, linkWhatsAppCliente, unidades,
++} from './formato'
++
++// ---------------------------------------------------------------------------
++// Tarjeta de una venta web, con las acciones que corresponden al rol.
++// Confirmación inline en dos pasos (como en /pedidos/cuentas).
++// ---------------------------------------------------------------------------
++
++export type AccionVenta = 'pagado' | 'retirado' | 'cancelado'
++
++type Props = {
++  venta: VentaStaff
++  /** socio o encargado: puede cobrar y cancelar */
++  esManager: boolean
++  ahora: number
++  /** Devuelve true si salió bien (para cerrar la confirmación). */
++  onAccion: (venta: VentaStaff, accion: AccionVenta, motivo: string | null) => Promise<boolean>
++}
++
++const SEIS_HORAS = 6 * 60 * 60 * 1000
++
++export function VentaCard({ venta, esManager, ahora, onAccion }: Props) {
++  const [confirmando, setConfirmando] = useState<AccionVenta | null>(null)
++  const [motivo, setMotivo] = useState('')
++  const [enviando, setEnviando] = useState(false)
++
++  const ui = ESTADO_UI[venta.estado]
++  const bolsas = unidades(venta.items)
++  const wa = linkWhatsAppCliente(venta.cliente_telefono, venta.cliente_nombre, venta.codigo)
++
++  const venceMs = new Date(venta.vence_at).getTime() - ahora
++  const pendiente = venta.estado === 'pendiente_pago'
++  const vencePronto = pendiente && venceMs < SEIS_HORAS
++  const motivoObligatorio = confirmando === 'cancelado' && venta.estado === 'pagado'
++
++  async function confirmar() {
++    if (!confirmando) return
++    if (motivoObligatorio && motivo.trim().length < 3) return
++    setEnviando(true)
++    const ok = await onAccion(venta, confirmando, motivo.trim() || null)
++    setEnviando(false)
++    if (ok) {
++      setConfirmando(null)
++      setMotivo('')
++    }
++  }
++
++  function abrir(accion: AccionVenta) {
++    setMotivo('')
++    setConfirmando(accion)
++  }
++
++  const pregunta: Record<AccionVenta, string> = {
++    pagado: `¿Llegó el comprobante por el monto exacto (${fmtPesos(venta.total)})?`,
++    retirado: `¿Le entregaste ${bolsas === 1 ? 'la bolsa' : `las ${bolsas} bolsas`} a ${venta.cliente_nombre}? Pedile el código ${venta.codigo}.`,
++    cancelado:
++      venta.estado === 'pagado'
++        ? 'Esta venta ya está pagada: si la cancelás, hay que devolver la transferencia. ¿Por qué se cancela?'
++        : '¿Cancelamos este pedido? El cliente lo va a ver cancelado en su ticket.',
++  }
++
++  return (
++    <article
++      aria-labelledby={`venta-${venta.id}`}
++      className="overflow-hidden rounded-2xl bg-white ring-1 ring-[#ebe6df]"
++    >
++      {/* Encabezado: código, estado y total */}
++      <div className="flex items-start gap-3 px-4 pt-3.5">
++        <div className="min-w-0 flex-1">
++          <div className="flex flex-wrap items-center gap-2">
++            <h3 id={`venta-${venta.id}`} className="font-mono text-sm font-bold tracking-tight text-[#3d2c24]">
++              {venta.codigo}
++            </h3>
++            <span
++              className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider"
++              style={{ color: ui.color, backgroundColor: ui.bg }}
++            >
++              {ui.label}
++            </span>
++          </div>
++          <p className="mt-0.5 text-[11px] text-[#a39e97]">
++            {fmtFechaHora(venta.creado_at)} · {fmtRelativo(venta.creado_at, ahora)}
++          </p>
++        </div>
++        <p className="shrink-0 font-display text-xl font-bold tabular-nums text-[#3d2c24]">{fmtPesos(venta.total)}</p>
++      </div>
++
++      {/* Cliente */}
++      <div className="mt-3 flex items-center gap-2 px-4">
++        <p className="min-w-0 flex-1 truncate text-sm font-semibold text-[#3d2c24]">{venta.cliente_nombre}</p>
++        <a
++          href={linkTelefono(venta.cliente_telefono)}
++          className="flex h-11 shrink-0 items-center gap-1.5 rounded-xl bg-[#f3efe9] px-3 text-xs font-semibold text-[#3d2c24] active:scale-95"
++          aria-label={`Llamar a ${venta.cliente_nombre} al ${venta.cliente_telefono}`}
++        >
++          <Phone className="size-3.5" aria-hidden />
++          <span className="tabular-nums">{venta.cliente_telefono}</span>
++        </a>
++        {wa && (
++          <a
++            href={wa}
++            target="_blank"
++            rel="noopener noreferrer"
++            className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-[#e8f5f1] text-[#006d5a] active:scale-95"
++            aria-label={`Escribirle por WhatsApp a ${venta.cliente_nombre}`}
++          >
++            <MessageCircle className="size-4" aria-hidden />
++          </a>
++        )}
++      </div>
++      {venta.cliente_email && (
++        <p className="mt-1 truncate px-4 text-[11px] text-[#a39e97]">{venta.cliente_email}</p>
++      )}
++
++      {/* Items */}
++      <ul className="mx-4 mt-3 divide-y divide-[#f5f0ea] rounded-xl bg-[#faf8f5] px-3">
++        {venta.items.map((it, i) => (
++          <li key={i} className="flex items-start gap-2 py-2">
++            <Package className="mt-0.5 size-3.5 shrink-0 text-[#a39e97]" aria-hidden />
++            <div className="min-w-0 flex-1">
++              <p className="text-xs font-medium text-[#3d2c24]">
++                <span className="tabular-nums">{it.cantidad} ×</span> {it.nombre}
++              </p>
++              {it.detalle && <p className="text-[11px] font-semibold text-[#006d5a]">{it.detalle}</p>}
++            </div>
++            <span className="shrink-0 text-xs font-semibold tabular-nums text-[#3d2c24]">{fmtPesos(it.subtotal)}</span>
++          </li>
++        ))}
++      </ul>
++
++      {venta.nota && (
++        <p className="mx-4 mt-2 flex items-start gap-1.5 rounded-xl bg-[#fdf6ec] px-3 py-2 text-xs text-[#3d2c24]">
++          <StickyNote className="mt-0.5 size-3.5 shrink-0 text-[#d4943a]" aria-hidden />
++          <span className="min-w-0 break-words">{venta.nota}</span>
++        </p>
++      )}
++
++      {/* Vencimiento y recorrido */}
++      <div className="mt-2 space-y-1 px-4 text-[11px]">
++        {pendiente && (
++          <p
++            className={cn(
++              'flex items-center gap-1.5 font-semibold',
++              vencePronto ? 'rounded-lg bg-[#fdf6ec] px-2 py-1 text-[#d4943a]' : 'text-[#a39e97]',
++            )}
++          >
++            <Clock className="size-3.5" aria-hidden />
++            {venceMs > 0
++              ? `Vence ${fmtRelativo(venta.vence_at, ahora)} (${fmtFechaHora(venta.vence_at)})`
++              : 'Vencido: se cancela solo en la próxima actualización'}
++          </p>
++        )}
++        {venta.pagado_at && (
++          <p className="text-[#a39e97]">
++            Cobrado {fmtFechaHora(venta.pagado_at)}{venta.pagado_por_nombre ? ` por ${venta.pagado_por_nombre}` : ''}
++          </p>
++        )}
++        {venta.retirado_at && (
++          <p className="text-[#a39e97]">
++            Entregado {fmtFechaHora(venta.retirado_at)}{venta.retirado_por_nombre ? ` por ${venta.retirado_por_nombre}` : ''}
++          </p>
++        )}
++        {venta.cancelado_at && (
++          <p className="text-[#ea504c]">
++            Cancelado {fmtFechaHora(venta.cancelado_at)}
++            {venta.motivo_cancelacion === 'vencido'
++              ? ' · venció sin pago'
++              : `${venta.cancelado_por_nombre ? ` por ${venta.cancelado_por_nombre}` : ''}${venta.motivo_cancelacion ? ` · ${venta.motivo_cancelacion}` : ''}`}
++          </p>
++        )}
++      </div>
++
++      {/* Acciones */}
++      <div className="mt-3 border-t border-[#f5f0ea] px-4 py-3">
++        {confirmando ? (
++          <div role="group" aria-label="Confirmar acción">
++            <p className="text-xs font-semibold text-[#3d2c24]">{pregunta[confirmando]}</p>
++            {confirmando === 'cancelado' && (
++              <label className="mt-2 block">
++                <span className="sr-only">Motivo de la cancelación</span>
++                <input
++                  type="text"
++                  value={motivo}
++                  onChange={(e) => setMotivo(e.target.value)}
++                  maxLength={200}
++                  placeholder={motivoObligatorio ? 'Motivo (obligatorio)' : 'Motivo (opcional)'}
++                  className="h-11 w-full rounded-xl border border-[#ebe6df] bg-white px-3 text-sm text-[#3d2c24] placeholder:text-[#a39e97] focus:border-[#006d5a] focus:outline-none focus:ring-1 focus:ring-[#006d5a]"
++                />
++              </label>
++            )}
++            <div className="mt-2 flex items-center gap-2">
++              <button
++                type="button"
++                onClick={() => setConfirmando(null)}
++                disabled={enviando}
++                className="flex h-11 flex-1 items-center justify-center gap-1 rounded-xl bg-[#f3efe9] text-xs font-semibold text-[#7d6c64] active:scale-95 disabled:opacity-60"
++              >
++                <X className="size-3.5" aria-hidden />
++                {confirmando === 'cancelado' ? 'Volver' : 'Cancelar'}
++              </button>
++              <button
++                type="button"
++                onClick={() => void confirmar()}
++                disabled={enviando || (motivoObligatorio && motivo.trim().length < 3)}
++                className="flex h-11 flex-1 items-center justify-center gap-1 rounded-xl bg-[#3d2c24] text-xs font-semibold text-white active:scale-95 disabled:opacity-40"
++              >
++                {enviando ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <Check className="size-3.5" aria-hidden />}
++                {confirmando === 'pagado' ? 'Sí, llegó' : confirmando === 'retirado' ? 'Sí, entregado' : 'Cancelar venta'}
++              </button>
++            </div>
++          </div>
++        ) : venta.estado === 'pendiente_pago' ? (
++          esManager ? (
++            <div className="flex items-center gap-2">
++              <button
++                type="button"
++                onClick={() => abrir('pagado')}
++                className="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-xl bg-[#006d5a] text-xs font-semibold text-white active:scale-95"
++              >
++                <Check className="size-3.5" aria-hidden />
++                Marcar pagado
++              </button>
++              <button
++                type="button"
++                onClick={() => abrir('cancelado')}
++                className="flex h-11 items-center justify-center gap-1.5 rounded-xl px-3 text-xs font-semibold text-[#ea504c] ring-1 ring-[#ea504c]/30 active:scale-95"
++              >
++                <Ban className="size-3.5" aria-hidden />
++                Cancelar
++              </button>
++            </div>
++          ) : (
++            <p className="flex items-center gap-1.5 text-[11px] text-[#7d6c64]">
++              <AlertTriangle className="size-3.5 text-[#d4943a]" aria-hidden />
++              Lo cobra un encargado o un socio cuando llegue el comprobante.
++            </p>
++          )
++        ) : venta.estado === 'pagado' ? (
++          <div className="flex items-center gap-2">
++            <button
++              type="button"
++              onClick={() => abrir('retirado')}
++              className="flex h-11 flex-1 items-center justify-center gap-1.5 rounded-xl bg-[#006d5a] text-xs font-semibold text-white active:scale-95"
++            >
++              <Package className="size-3.5" aria-hidden />
++              Entregado
++            </button>
++            {esManager && (
++              <button
++                type="button"
++                onClick={() => abrir('cancelado')}
++                className="flex h-11 items-center justify-center gap-1.5 rounded-xl px-3 text-xs font-semibold text-[#ea504c] ring-1 ring-[#ea504c]/30 active:scale-95"
++              >
++                <Ban className="size-3.5" aria-hidden />
++                Cancelar
++              </button>
++            )}
++          </div>
++        ) : (
++          <p className="text-[11px] text-[#a39e97]">
++            {venta.estado === 'retirado' ? 'Venta cerrada.' : 'Venta cancelada.'}
++          </p>
++        )}
++      </div>
++    </article>
++  )
++}
+diff --git a/src/app/(app)/tienda/_components/formato.ts b/src/app/(app)/tienda/_components/formato.ts
+new file mode 100644
+index 0000000..bd7846b
+--- /dev/null
++++ b/src/app/(app)/tienda/_components/formato.ts
+@@ -0,0 +1,74 @@
++import { format, formatDistanceStrict } from 'date-fns'
++import { es } from 'date-fns/locale/es'
++import type { EstadoVenta } from '@/lib/tienda/tipos'
++
++// ---------------------------------------------------------------------------
++// Helpers de presentación de /tienda
++// ---------------------------------------------------------------------------
++
++/** 9500 → "$ 9.500" */
++export function fmtPesos(n: number): string {
++  return `$ ${n.toLocaleString('es-AR', { maximumFractionDigits: 2 })}`
++}
++
++/** "lun 6 oct, 18:30" */
++export function fmtFechaHora(iso: string): string {
++  return format(new Date(iso), "EEE d MMM, HH:mm", { locale: es })
++}
++
++/** "hace 2 horas" / "en 5 horas" respecto de `ahora`. */
++export function fmtRelativo(iso: string, ahora: number): string {
++  return formatDistanceStrict(new Date(iso), new Date(ahora), { locale: es, addSuffix: true })
++}
++
++export const ESTADO_UI: Record<EstadoVenta, { label: string; color: string; bg: string }> = {
++  pendiente_pago: { label: 'Por cobrar', color: '#d4943a', bg: '#fdf6ec' },
++  pagado: { label: 'Pagado · para entregar', color: '#006d5a', bg: '#e8f5f1' },
++  retirado: { label: 'Entregado', color: '#a39e97', bg: '#f3efe9' },
++  cancelado: { label: 'Cancelado', color: '#ea504c', bg: '#fef2f2' },
++}
++
++/**
++ * Teléfono como lo escribió el cliente → número para wa.me (Argentina).
++ * "381 555-1234" → "5493815551234"; "+54 9 381 555-1234" queda igual;
++ * "0381 15-555-1234" → "5493815551234". Si no se puede deducir, null.
++ */
++export function telefonoParaWhatsApp(telefono: string): string | null {
++  let d = telefono.replace(/\D/g, '')
++  if (d.startsWith('00')) d = d.slice(2)
++  if (d.startsWith('54')) {
++    d = d.slice(2)
++    if (d.startsWith('9')) d = d.slice(1)
++  }
++  if (d.startsWith('0')) d = d.slice(1)
++  // característica (2 a 4 dígitos) + 15 + número: se saca el 15
++  if (d.length === 12) {
++    for (const largo of [2, 3, 4]) {
++      if (d.slice(largo, largo + 2) === '15') {
++        d = d.slice(0, largo) + d.slice(largo + 2)
++        break
++      }
++    }
++  }
++  return d.length === 10 ? `549${d}` : null
++}
++
++/** Link para escribirle al cliente por WhatsApp con el código del pedido. */
++export function linkWhatsAppCliente(telefono: string, nombre: string, codigo: string): string | null {
++  const numero = telefonoParaWhatsApp(telefono)
++  if (!numero) return null
++  const pila = nombre.trim().split(/\s+/)[0] ?? ''
++  const texto = `¡Hola ${pila}! Te escribimos de La Vieja Escuela por tu pedido ${codigo} de la web.`
++  return `https://wa.me/${numero}?text=${encodeURIComponent(texto)}`
++}
++
++/** tel: con solo dígitos y el + si lo tenía. */
++export function linkTelefono(telefono: string): string {
++  const t = telefono.trim()
++  return `tel:${t.startsWith('+') ? '+' : ''}${t.replace(/\D/g, '')}`
++}
++
++/** Cantidad total de unidades (bolsas) de una venta. */
++export function unidades(items: Array<{ cantidad: number }>): number {
++  return items.reduce((acc, it) => acc + it.cantidad, 0)
++}
+diff --git a/src/app/(app)/tienda/_components/use-ahora.ts b/src/app/(app)/tienda/_components/use-ahora.ts
+new file mode 100644
+index 0000000..a89f0b4
+--- /dev/null
++++ b/src/app/(app)/tienda/_components/use-ahora.ts
+@@ -0,0 +1,16 @@
++'use client'
++
++import { useEffect, useState } from 'react'
++
++/**
++ * Hora actual que se refresca sola cada `cadaMs` (por defecto 1 minuto),
++ * para que "vence en 3 horas" se mantenga al día sin recargar.
++ */
++export function useAhora(cadaMs = 60_000): number {
++  const [ahora, setAhora] = useState(() => Date.now())
++  useEffect(() => {
++    const t = setInterval(() => setAhora(Date.now()), cadaMs)
++    return () => clearInterval(t)
++  }, [cadaMs])
++  return ahora
++}
+diff --git a/src/app/(app)/tienda/page.tsx b/src/app/(app)/tienda/page.tsx
+new file mode 100644
+index 0000000..fa4d9de
+--- /dev/null
++++ b/src/app/(app)/tienda/page.tsx
+@@ -0,0 +1,220 @@
++'use client'
++
++// ---------------------------------------------------------------------------
++// /tienda — Ventas de la tienda web (café 1/4 kg desde la landing)
++// ---------------------------------------------------------------------------
++// El cliente compra en la web → la venta llega acá "Por cobrar" → cuando llega
++// el comprobante por WhatsApp un encargado/socio la marca pagada → cuando el
++// cliente la retira, cualquiera del equipo (barista incluido) la marca
++// entregada. El ticket del cliente en la web se actualiza solo.
++// Socio, encargado y barista. Ajustes: solo socio y encargado.
++// ---------------------------------------------------------------------------
++
++import { useState } from 'react'
++import useSWR from 'swr'
++import { Lock, Settings2, ShoppingBag, X, AlertTriangle, RefreshCw } from 'lucide-react'
++import { useProfileContext } from '@/lib/hooks/use-profile'
++import { isManagerOrAbove } from '@/lib/roles'
++import { apiFetcher } from '@/lib/swr/fetchers'
++import { errorToast, successToast } from '@/lib/toast-helpers'
++import { FadeIn, StaggerList, StaggerItem } from '@/components/ui/motion'
++import { LoadingState } from '@/components/ui/LoadingState'
++import { EmptyState } from '@/components/ui/EmptyState'
++import type { EstadoVenta, RespuestaVentasStaff, VentaStaff } from '@/lib/tienda/tipos'
++import { VentaCard, type AccionVenta } from './_components/VentaCard'
++import { AjustesTienda } from './_components/AjustesTienda'
++import { fmtPesos } from './_components/formato'
++import { useAhora } from './_components/use-ahora'
++
++const ROLES_TIENDA = new Set(['socio', 'encargado', 'barista'])
++
++const TABS: { key: EstadoVenta; label: string; ayuda: string; vacio: string }[] = [
++  {
++    key: 'pendiente_pago',
++    label: 'Por cobrar',
++    ayuda: 'Esperando la transferencia. Marcala pagada solo cuando llegue el comprobante por el monto exacto.',
++    vacio: 'No hay ventas esperando pago.',
++  },
++  {
++    key: 'pagado',
++    label: 'Para entregar',
++    ayuda: 'Ya pagadas. Cuando el cliente pase, pedile el código y marcala entregada.',
++    vacio: 'No hay bolsas esperando que las retiren.',
++  },
++  {
++    key: 'retirado',
++    label: 'Entregados',
++    ayuda: 'Ventas cerradas: pagadas y retiradas.',
++    vacio: 'Todavía no se entregó ninguna venta web.',
++  },
++  {
++    key: 'cancelado',
++    label: 'Cancelados',
++    ayuda: 'Canceladas por el equipo o vencidas sin pago.',
++    vacio: 'No hay ventas canceladas.',
++  },
++]
++
++const MENSAJE_OK: Record<AccionVenta, string> = {
++  pagado: 'Venta cobrada: pasa a "Para entregar"',
++  retirado: 'Venta entregada',
++  cancelado: 'Venta cancelada',
++}
++
++export default function TiendaPage() {
++  const { profile, loading: cargandoPerfil } = useProfileContext()
++  const [tab, setTab] = useState<EstadoVenta>('pendiente_pago')
++  const [verAjustes, setVerAjustes] = useState(false)
++  const ahora = useAhora()
++
++  const puedeVer = ROLES_TIENDA.has(profile?.role ?? '')
++  const esManager = isManagerOrAbove(profile?.role)
++
++  const { data, error, isLoading, isValidating, mutate } = useSWR<RespuestaVentasStaff>(
++    puedeVer ? `/api/tienda/ventas?estado=${tab}` : null,
++    apiFetcher,
++    { refreshInterval: 30_000 },
++  )
++
++  async function accion(venta: VentaStaff, a: AccionVenta, motivo: string | null): Promise<boolean> {
++    try {
++      const res = await fetch(`/api/tienda/ventas/${venta.id}`, {
++        method: 'PATCH',
++        headers: { 'Content-Type': 'application/json' },
++        body: JSON.stringify({ estado: a, motivo }),
++      })
++      const json = await res.json().catch(() => ({}))
++      if (!res.ok) {
++        errorToast(`No se pudo actualizar ${venta.codigo}`, json.error ?? `Error ${res.status}`)
++        if (res.status === 409) void mutate()
++        return false
++      }
++      successToast(MENSAJE_OK[a], `${venta.codigo} · ${fmtPesos(venta.total)}`)
++      void mutate()
++      return true
++    } catch (err) {
++      errorToast(`No se pudo actualizar ${venta.codigo}`, err)
++      return false
++    }
++  }
++
++  if (cargandoPerfil) return <LoadingState />
++
++  if (!puedeVer) {
++    return (
++      <div className="pb-28">
++        <EmptyState
++          icon={Lock}
++          title="Acceso restringido"
++          description="Las ventas de la tienda web las ven socios, encargados y baristas."
++        />
++      </div>
++    )
++  }
++
++  const tabActual = TABS.find((t) => t.key === tab) ?? TABS[0]
++  const ventas = data?.ventas ?? []
++  const conteos = data?.conteos
++
++  return (
++    <div className="mx-auto max-w-2xl space-y-4 pb-28">
++      <FadeIn>
++        <div className="flex items-start gap-3">
++          <div className="min-w-0 flex-1">
++            <h1 className="font-display text-2xl font-bold tracking-tight text-[#3d2c24]">Tienda web</h1>
++            <p className="section-label mt-0.5">Café de la casa vendido desde la web</p>
++          </div>
++          {esManager && (
++            <button
++              type="button"
++              onClick={() => setVerAjustes((v) => !v)}
++              aria-expanded={verAjustes}
++              aria-controls="tienda-ajustes"
++              className="flex h-11 shrink-0 items-center gap-1.5 rounded-xl bg-white px-3 text-xs font-semibold text-[#3d2c24] ring-1 ring-[#ebe6df] active:scale-95"
++            >
++              {verAjustes ? <X className="size-4" aria-hidden /> : <Settings2 className="size-4" aria-hidden />}
++              {verAjustes ? 'Cerrar' : 'Ajustes'}
++            </button>
++          )}
++        </div>
++      </FadeIn>
++
++      {esManager && verAjustes && (
++        <FadeIn>
++          <section id="tienda-ajustes" aria-labelledby="tienda-ajustes-titulo" className="rounded-2xl bg-[#f3efe9] p-3">
++            <h2 id="tienda-ajustes-titulo" className="mb-3 px-1 text-sm font-bold text-[#3d2c24]">
++              Ajustes de la tienda
++            </h2>
++            <AjustesTienda />
++          </section>
++        </FadeIn>
++      )}
++
++      {/* Pestañas */}
++      <div role="tablist" aria-label="Estado de las ventas" className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1">
++        {TABS.map((t) => {
++          const n = conteos?.[t.key]
++          const activa = t.key === tab
++          return (
++            <button
++              key={t.key}
++              type="button"
++              role="tab"
++              aria-selected={activa}
++              aria-controls="tienda-lista"
++              onClick={() => setTab(t.key)}
++              className={`min-h-11 shrink-0 ${activa ? 'pill pill-active' : 'pill pill-inactive'}`}
++            >
++              {t.label}
++              {n !== undefined && n > 0 && (
++                <span
++                  className={`rounded-full px-1.5 text-[10px] font-bold tabular-nums ${
++                    activa ? 'bg-white/25 text-white' : t.key === 'pendiente_pago' ? 'bg-[#fdf6ec] text-[#d4943a]' : 'bg-white text-[#7d6c64]'
++                  }`}
++                >
++                  {n}
++                </span>
++              )}
++            </button>
++          )
++        })}
++      </div>
++
++      <div className="flex items-start justify-between gap-3">
++        <p className="text-xs text-[#7d6c64]">{tabActual.ayuda}</p>
++        <button
++          type="button"
++          onClick={() => void mutate()}
++          aria-label="Actualizar la lista"
++          className="flex size-11 shrink-0 items-center justify-center rounded-xl text-[#a39e97] active:scale-95"
++        >
++          <RefreshCw className={`size-4 ${isValidating ? 'animate-spin' : ''}`} aria-hidden />
++        </button>
++      </div>
++
++      <div id="tienda-lista" role="tabpanel" aria-live="polite" aria-busy={isLoading}>
++        {isLoading && !data ? (
++          <LoadingState message="Cargando ventas..." />
++        ) : error && !data ? (
++          <div className="rounded-2xl bg-[#fdf6ec] px-4 py-3 ring-1 ring-[#d4943a]/30">
++            <p className="flex items-center gap-1.5 text-sm font-semibold text-[#d4943a]">
++              <AlertTriangle className="size-4" aria-hidden />
++              No se pudieron cargar las ventas web
++            </p>
++            <p className="mt-0.5 text-xs text-[#7d6c64]">{error instanceof Error ? error.message : 'Probá de nuevo en un rato.'}</p>
++          </div>
++        ) : ventas.length === 0 ? (
++          <EmptyState icon={ShoppingBag} title="Nada por acá" description={tabActual.vacio} />
++        ) : (
++          <StaggerList className="space-y-3">
++            {ventas.map((v) => (
++              <StaggerItem key={v.id}>
++                <VentaCard venta={v} esManager={esManager} ahora={ahora} onAccion={accion} />
++              </StaggerItem>
++            ))}
++          </StaggerList>
++        )}
++      </div>
++    </div>
++  )
++}
+diff --git a/src/app/api/tienda/config/route.ts b/src/app/api/tienda/config/route.ts
+new file mode 100644
+index 0000000..ae9d690
+--- /dev/null
++++ b/src/app/api/tienda/config/route.ts
+@@ -0,0 +1,124 @@
++import { NextResponse } from 'next/server'
++import { logAudit } from '@/lib/audit'
++import { requireRole } from '@/lib/supabase/require-role'
++import { tiendaSecretoConfigurado } from '@/lib/tienda/auth'
++import {
++  aplicarPatchConfig,
++  aProductoStaff,
++  leerConfig,
++  leerProductos,
++  prefijoCodigo,
++  SETTINGS_KEY,
++  validarPatchProductos,
++} from '@/lib/tienda/config'
++import { faltaMigracion, MENSAJE_FALTA_MIGRACION, tiendaAdmin, type TiendaDb } from '@/lib/tienda/db'
++import { detalleError } from '@/lib/tienda/respuestas'
++import type { RespuestaConfigStaff } from '@/lib/tienda/tipos'
++
++// ---------------------------------------------------------------------------
++// GET   /api/tienda/config — ajustes de la tienda web + productos
++// PATCH /api/tienda/config — body { config?: {...parcial}, productos?: [{ id, ...cambios }] }
++// ---------------------------------------------------------------------------
++// Solo socio y encargado. La config vive en app_settings (key 'tienda'); los
++// productos en tienda_productos. Nunca devuelve el valor de TIENDA_API_SECRET:
++// solo si está configurado.
++// ---------------------------------------------------------------------------
++
++export const dynamic = 'force-dynamic'
++
++const ROLES = ['socio', 'encargado'] as const
++
++async function armarRespuesta(admin: TiendaDb): Promise<RespuestaConfigStaff> {
++  const [config, productos] = await Promise.all([leerConfig(admin), leerProductos(admin)])
++  return {
++    config,
++    productos: productos.map(aProductoStaff),
++    prefijo: prefijoCodigo(),
++    secreto_configurado: tiendaSecretoConfigurado(),
++  }
++}
++
++function errorServidor(err: unknown, donde: string) {
++  if (faltaMigracion(err)) {
++    return NextResponse.json({ error: MENSAJE_FALTA_MIGRACION, migracion_pendiente: true }, { status: 503 })
++  }
++  console.error(`[tienda] ${donde}:`, detalleError(err))
++  return NextResponse.json({ error: 'No se pudieron leer o guardar los ajustes de la tienda' }, { status: 500 })
++}
++
++export async function GET() {
++  const auth = await requireRole(ROLES)
++  if (auth.response) return auth.response
++  try {
++    return NextResponse.json(await armarRespuesta(tiendaAdmin()), { headers: { 'Cache-Control': 'no-store' } })
++  } catch (err) {
++    return errorServidor(err, 'GET /api/tienda/config')
++  }
++}
++
++export async function PATCH(request: Request) {
++  const auth = await requireRole(ROLES)
++  if (auth.response) return auth.response
++  const { user } = auth
++
++  const body = (await request.json().catch(() => null)) as { config?: unknown; productos?: unknown } | null
++  if (!body || typeof body !== 'object') return NextResponse.json({ error: 'Body inválido' }, { status: 400 })
++
++  try {
++    const admin = tiendaAdmin()
++    const [actual, productosActuales] = await Promise.all([leerConfig(admin), leerProductos(admin)])
++
++    const config = aplicarPatchConfig(actual, body.config)
++    if (!config.ok) return NextResponse.json({ error: config.error, campo: config.campo }, { status: 400 })
++    const productos = validarPatchProductos(body.productos, productosActuales)
++    if (!productos.ok) return NextResponse.json({ error: productos.error, campo: productos.campo }, { status: 400 })
++
++    // Productos primero: así "activar la venta + poner precio" en un mismo
++    // guardado no deja un instante la venta abierta con el café sin precio.
++    for (const p of productos.data) {
++      const { error } = await admin.from('tienda_productos').update(p.cambios).eq('id', p.id)
++      if (error) throw error
++    }
++
++    const configCambio = JSON.stringify(config.data) !== JSON.stringify(actual)
++    if (configCambio) {
++      const { error } = await admin.from('app_settings').upsert({
++        key: SETTINGS_KEY,
++        value: config.data,
++        updated_by: user.id,
++        updated_at: new Date().toISOString(),
++      })
++      if (error) throw error
++    }
++
++    if (configCambio || productos.data.length > 0) {
++      const { data: perfil } = await admin.from('profiles').select('first_name, last_name').eq('id', user.id).maybeSingle()
++      const p = perfil as { first_name: string | null; last_name: string | null } | null
++      const userName = `${p?.first_name ?? ''} ${p?.last_name ?? ''}`.trim() || null
++      const abrio = !actual.venta_habilitada && config.data.venta_habilitada
++      const cerro = actual.venta_habilitada && !config.data.venta_habilitada
++      void logAudit(admin, {
++        userId: user.id,
++        userName,
++        action: 'tienda_config',
++        module: 'tienda',
++        entityType: 'app_settings',
++        entityId: SETTINGS_KEY,
++        description: abrio
++          ? 'Activó la venta web'
++          : cerro
++            ? 'Pausó la venta web'
++            : 'Cambió los ajustes de la tienda web',
++        metadata: {
++          antes: actual,
++          despues: config.data,
++          productos: productos.data,
++        },
++      })
++    }
++
++    return NextResponse.json(await armarRespuesta(admin))
++  } catch (err) {
++    return errorServidor(err, 'PATCH /api/tienda/config')
++  }
++}
+diff --git a/src/app/api/tienda/publico/catalogo/route.ts b/src/app/api/tienda/publico/catalogo/route.ts
+new file mode 100644
+index 0000000..ec67205
+--- /dev/null
++++ b/src/app/api/tienda/publico/catalogo/route.ts
+@@ -0,0 +1,42 @@
++import { protegerRutaPublica } from '@/lib/tienda/auth'
++import { aProductoPublico, leerConfig, leerProductos } from '@/lib/tienda/config'
++import { faltaMigracion, tiendaAdmin } from '@/lib/tienda/db'
++import { detalleError, errorInterno, jsonPublico } from '@/lib/tienda/respuestas'
++import { CONTRATO_VERSION, type Catalogo } from '@/lib/tienda/tipos'
++
++// ---------------------------------------------------------------------------
++// GET /api/tienda/publico/catalogo — contrato v1 con la landing
++// ---------------------------------------------------------------------------
++// Productos (ordenados por `orden`) + configuración de la tienda de esta
++// sucursal. Protegida con Authorization: Bearer <TIENDA_API_SECRET>.
++// Un producto sin precio cargado sale como no disponible.
++// ---------------------------------------------------------------------------
++
++export const dynamic = 'force-dynamic'
++
++export async function GET(request: Request) {
++  const rechazo = protegerRutaPublica(request)
++  if (rechazo) return rechazo
++
++  try {
++    const admin = tiendaAdmin()
++    const [config, filas] = await Promise.all([leerConfig(admin), leerProductos(admin)])
++
++    const catalogo: Catalogo = {
++      version: CONTRATO_VERSION,
++      venta_habilitada: config.venta_habilitada,
++      mensaje: config.mensaje,
++      productos: filas.map(aProductoPublico),
++      pago: config.pago,
++      whatsapp: config.whatsapp,
++      retiro: config.retiro,
++      vencimiento_horas: config.vencimiento_horas,
++    }
++    return jsonPublico(catalogo)
++  } catch (err) {
++    console.error(
++      `[tienda] GET catalogo: ${faltaMigracion(err) ? 'falta la migración 20261004_tienda_web.sql' : detalleError(err)}`,
++    )
++    return errorInterno()
++  }
++}
+diff --git a/src/app/api/tienda/publico/ventas/[codigo]/route.ts b/src/app/api/tienda/publico/ventas/[codigo]/route.ts
+new file mode 100644
+index 0000000..5a2bdf7
+--- /dev/null
++++ b/src/app/api/tienda/publico/ventas/[codigo]/route.ts
+@@ -0,0 +1,58 @@
++import { protegerRutaPublica } from '@/lib/tienda/auth'
++import { leerConfig } from '@/lib/tienda/config'
++import { faltaMigracion, tiendaAdmin } from '@/lib/tienda/db'
++import { detalleError, errorInterno, jsonPublico, noEncontrada } from '@/lib/tienda/respuestas'
++import type { ConsultarVentaRespuesta } from '@/lib/tienda/tipos'
++import {
++  aVentaPublica,
++  cargarVenta,
++  codigoConForma,
++  hashToken,
++  hashesIguales,
++  tokenConForma,
++  vencerPendientes,
++} from '@/lib/tienda/ventas'
++
++// ---------------------------------------------------------------------------
++// GET /api/tienda/publico/ventas/{codigo} — contrato v1 con la landing
++// ---------------------------------------------------------------------------
++// Estado de una venta para el ticket del cliente. Además del secreto de la
++// landing pide el token de esa venta en el header X-Venta-Token.
++// Código inexistente y token incorrecto devuelven EXACTAMENTE el mismo 404.
++// Antes de leer se vencen las pendientes (así el ticket muestra "cancelado"
++// aunque no haya pg_cron).
++// ---------------------------------------------------------------------------
++
++export const dynamic = 'force-dynamic'
++
++/** Hash de relleno para comparar igual cuando el código no existe. */
++const HASH_RELLENO = '0'.repeat(64)
++
++export async function GET(request: Request, context: { params: Promise<{ codigo: string }> }) {
++  const rechazo = protegerRutaPublica(request)
++  if (rechazo) return rechazo
++
++  const { codigo: crudo } = await context.params
++  const codigo = crudo.trim().toUpperCase()
++  const token = request.headers.get('x-venta-token')?.trim() ?? null
++  if (!codigoConForma(codigo) || !tokenConForma(token)) return noEncontrada()
++
++  try {
++    const admin = tiendaAdmin()
++    await vencerPendientes(admin)
++
++    const cargada = await cargarVenta(admin, { codigo })
++    // Se compara siempre (aunque no exista) para que el tiempo no delate nada.
++    const coincide = hashesIguales(hashToken(token), cargada?.venta.token_hash ?? HASH_RELLENO)
++    if (!cargada || !coincide || cargada.items.length === 0) return noEncontrada()
++
++    const config = await leerConfig(admin)
++    const respuesta: ConsultarVentaRespuesta = { venta: aVentaPublica(cargada, config) }
++    return jsonPublico(respuesta)
++  } catch (err) {
++    console.error(
++      `[tienda] GET ventas/{codigo}: ${faltaMigracion(err) ? 'falta la migración 20261004_tienda_web.sql' : detalleError(err)}`,
++    )
++    return errorInterno()
++  }
++}
+diff --git a/src/app/api/tienda/publico/ventas/route.ts b/src/app/api/tienda/publico/ventas/route.ts
+new file mode 100644
+index 0000000..eacecbf
+--- /dev/null
++++ b/src/app/api/tienda/publico/ventas/route.ts
+@@ -0,0 +1,81 @@
++import { after } from 'next/server'
++import { notifyEvent } from '@/lib/push/notify-event'
++import { protegerRutaPublica } from '@/lib/tienda/auth'
++import { leerConfig, prefijoCodigo } from '@/lib/tienda/config'
++import { faltaMigracion, tiendaAdmin } from '@/lib/tienda/db'
++import { detalleError, errorInterno, errorPublico, jsonPublico } from '@/lib/tienda/respuestas'
++import { esCodigoError, type CrearVentaRespuesta, type ResultadoCrearVenta } from '@/lib/tienda/tipos'
++import { validarCrearVenta } from '@/lib/tienda/validar'
++import { aVentaPublica, cargarVenta, generarToken, nombreDePila, pesos } from '@/lib/tienda/ventas'
++
++// ---------------------------------------------------------------------------
++// POST /api/tienda/publico/ventas — contrato v1 con la landing
++// ---------------------------------------------------------------------------
++// Crea una venta 'pendiente_pago' con public.tienda_crear_venta(), que valida
++// de nuevo todo, toma el precio de esta base, aplica el límite por teléfono y
++// es idempotente por idempotency_key.
++//   201 { venta, token }  venta nueva
++//   200 { venta, token }  repetición de la misma idempotency_key (token nuevo)
++//   4xx { error, codigo, campo? } según STATUS_POR_ERROR
++// El token se devuelve UNA vez; acá se guarda solo su sha-256.
++// No se loguean datos del cliente (nombre, teléfono, email, nota).
++// ---------------------------------------------------------------------------
++
++export const dynamic = 'force-dynamic'
++
++export async function POST(request: Request) {
++  const rechazo = protegerRutaPublica(request)
++  if (rechazo) return rechazo
++
++  const body = await request.json().catch(() => null)
++  const validacion = validarCrearVenta(body)
++  if (!validacion.ok) {
++    return errorPublico('datos_invalidos', validacion.error, { campo: validacion.campo })
++  }
++
++  try {
++    const admin = tiendaAdmin()
++    const { token, hash } = generarToken()
++
++    const { data, error } = await admin.rpc('tienda_crear_venta', {
++      p_venta: validacion.data,
++      p_prefijo: prefijoCodigo(),
++      p_token_hash: hash,
++    })
++    if (error) throw error
++
++    const r = data as ResultadoCrearVenta | null
++    if (!r || typeof r !== 'object') throw new Error('tienda_crear_venta devolvió una respuesta vacía')
++
++    if (!r.ok) {
++      if (!esCodigoError(r.codigo) || r.codigo === 'error_interno') {
++        throw new Error(`tienda_crear_venta devolvió un código desconocido: ${String(r.codigo)}`)
++      }
++      return errorPublico(r.codigo, r.error, { campo: r.campo })
++    }
++
++    const [cargada, config] = await Promise.all([cargarVenta(admin, { id: r.venta_id }), leerConfig(admin)])
++    if (!cargada || cargada.items.length === 0) throw new Error(`venta ${r.codigo} creada pero no se pudo leer`)
++
++    const respuesta: CrearVentaRespuesta = { venta: aVentaPublica(cargada, config), token }
++
++    if (!r.repetida) {
++      const v = respuesta.venta
++      const bolsas = v.items.reduce((acc, it) => acc + it.cantidad, 0)
++      after(() =>
++        notifyEvent(admin, 'tienda_venta_nueva', {
++          title: 'Nueva venta web',
++          body: `${v.codigo} · ${nombreDePila(v.cliente_nombre)} · ${bolsas} ${bolsas === 1 ? 'bolsa' : 'bolsas'} · ${pesos(v.total)}. Esperando la transferencia.`,
++          url: '/tienda',
++        }).catch(() => {}),
++      )
++    }
++
++    return jsonPublico(respuesta, r.repetida ? 200 : 201)
++  } catch (err) {
++    console.error(
++      `[tienda] POST ventas: ${faltaMigracion(err) ? 'falta la migración 20261004_tienda_web.sql' : detalleError(err)}`,
++    )
++    return errorInterno()
++  }
++}
+diff --git a/src/app/api/tienda/ventas/[id]/route.ts b/src/app/api/tienda/ventas/[id]/route.ts
+new file mode 100644
+index 0000000..804dd92
+--- /dev/null
++++ b/src/app/api/tienda/ventas/[id]/route.ts
+@@ -0,0 +1,151 @@
++import { NextResponse } from 'next/server'
++import { logAudit } from '@/lib/audit'
++import { isManagerOrAbove } from '@/lib/roles'
++import { requireRole } from '@/lib/supabase/require-role'
++import { faltaMigracion, MENSAJE_FALTA_MIGRACION, tiendaAdmin } from '@/lib/tienda/db'
++import { detalleError } from '@/lib/tienda/respuestas'
++import type { EstadoVenta, TiendaVentaRow } from '@/lib/tienda/tipos'
++import { esUuid } from '@/lib/tienda/validar'
++import { aVentaStaff, cargarVenta, COLUMNAS_VENTA, nombresDePerfiles, pesos } from '@/lib/tienda/ventas'
++
++// ---------------------------------------------------------------------------
++// PATCH /api/tienda/ventas/[id]   body: { estado, motivo? }
++// ---------------------------------------------------------------------------
++// Mueve una venta web de estado:
++//   pendiente_pago → pagado      (llegó el comprobante por el monto exacto)
++//   pendiente_pago → cancelado
++//   pagado         → retirado    (el cliente se la llevó)
++//   pagado         → cancelado   (con motivo: hay que devolver la plata)
++// 'pagado' y 'cancelado': socio o encargado. 'retirado': también barista.
++// El update va condicionado al estado anterior: si otro lo movió en el medio,
++// responde 409 y no pisa nada.
++// ---------------------------------------------------------------------------
++
++export const dynamic = 'force-dynamic'
++
++type Destino = Exclude<EstadoVenta, 'pendiente_pago'>
++
++const TRANSICIONES: Record<EstadoVenta, readonly Destino[]> = {
++  pendiente_pago: ['pagado', 'cancelado'],
++  pagado: ['retirado', 'cancelado'],
++  retirado: [],
++  cancelado: [],
++}
++
++const ETIQUETA: Record<EstadoVenta, string> = {
++  pendiente_pago: 'por cobrar',
++  pagado: 'pagada',
++  retirado: 'entregada',
++  cancelado: 'cancelada',
++}
++
++function esDestino(v: unknown): v is Destino {
++  return v === 'pagado' || v === 'retirado' || v === 'cancelado'
++}
++
++export async function PATCH(request: Request, context: { params: Promise<{ id: string }> }) {
++  const auth = await requireRole(['socio', 'encargado', 'barista'])
++  if (auth.response) return auth.response
++  const { user } = auth
++
++  const { id } = await context.params
++  if (!esUuid(id)) return NextResponse.json({ error: 'Venta inválida' }, { status: 400 })
++
++  const body = (await request.json().catch(() => null)) as { estado?: unknown; motivo?: unknown } | null
++  if (!body || !esDestino(body.estado)) {
++    return NextResponse.json({ error: 'Estado inválido' }, { status: 400 })
++  }
++  const destino = body.estado
++
++  if (destino !== 'retirado' && !isManagerOrAbove(user.role)) {
++    return NextResponse.json(
++      { error: 'Solo un encargado o un socio puede marcar ventas como pagadas o cancelarlas' },
++      { status: 403 },
++    )
++  }
++
++  let motivo: string | null = null
++  if (body.motivo !== undefined && body.motivo !== null) {
++    if (typeof body.motivo !== 'string') return NextResponse.json({ error: 'Motivo inválido' }, { status: 400 })
++    motivo = body.motivo.trim().slice(0, 200) || null
++  }
++
++  try {
++    const admin = tiendaAdmin()
++
++    const { data: actualData, error: actualErr } = await admin
++      .from('tienda_ventas')
++      .select(COLUMNAS_VENTA)
++      .eq('id', id)
++      .maybeSingle()
++    if (actualErr) throw actualErr
++    if (!actualData) return NextResponse.json({ error: 'Venta no encontrada' }, { status: 404 })
++    const actual = actualData as unknown as TiendaVentaRow
++
++    if (!TRANSICIONES[actual.estado].includes(destino)) {
++      return NextResponse.json(
++        { error: `La venta ${actual.codigo} ya está ${ETIQUETA[actual.estado]}: no se puede marcar como ${ETIQUETA[destino]}.` },
++        { status: 409 },
++      )
++    }
++    if (destino === 'cancelado' && actual.estado === 'pagado' && !motivo) {
++      return NextResponse.json(
++        { error: 'Contá por qué se cancela una venta ya pagada (y acordate de devolver la transferencia).' },
++        { status: 400 },
++      )
++    }
++
++    const ahora = new Date().toISOString()
++    const cambios: Record<string, unknown> = { estado: destino }
++    if (destino === 'pagado') Object.assign(cambios, { pagado_at: ahora, pagado_por: user.id })
++    if (destino === 'retirado') Object.assign(cambios, { retirado_at: ahora, retirado_por: user.id })
++    if (destino === 'cancelado') {
++      Object.assign(cambios, { cancelado_at: ahora, cancelado_por: user.id, motivo_cancelacion: motivo })
++    }
++
++    const { data: movida, error: updErr } = await admin
++      .from('tienda_ventas')
++      .update(cambios)
++      .eq('id', id)
++      .eq('estado', actual.estado) // nadie la movió mientras tanto
++      .select('id')
++      .maybeSingle()
++    if (updErr) throw updErr
++    if (!movida) {
++      return NextResponse.json(
++        { error: `Alguien más cambió la venta ${actual.codigo} recién. Actualizá la lista.` },
++        { status: 409 },
++      )
++    }
++
++    const [cargada, perfil] = await Promise.all([
++      cargarVenta(admin, { id }),
++      admin.from('profiles').select('first_name, last_name').eq('id', user.id).maybeSingle(),
++    ])
++    const p = perfil.data as { first_name: string | null; last_name: string | null } | null
++    const userName = `${p?.first_name ?? ''} ${p?.last_name ?? ''}`.trim() || null
++    const total = Number(actual.total)
++
++    void logAudit(admin, {
++      userId: user.id,
++      userName,
++      action: `tienda_venta_${destino}`,
++      module: 'tienda',
++      entityType: 'tienda_venta',
++      entityId: id,
++      description: `Venta web ${actual.codigo} (${pesos(total)}) marcada como ${ETIQUETA[destino]}${motivo ? `: ${motivo}` : ''}`,
++      metadata: { codigo: actual.codigo, de: actual.estado, a: destino, total, motivo },
++    })
++
++    if (!cargada) return NextResponse.json({ ok: true })
++    const v = cargada.venta
++    const nombres = await nombresDePerfiles(admin, [v.pagado_por, v.retirado_por, v.cancelado_por])
++    return NextResponse.json({ ok: true, venta: aVentaStaff(v, cargada.items, nombres) })
++  } catch (err) {
++    if (faltaMigracion(err)) {
++      return NextResponse.json({ error: MENSAJE_FALTA_MIGRACION, migracion_pendiente: true }, { status: 503 })
++    }
++    console.error('[tienda] PATCH /api/tienda/ventas/[id]:', detalleError(err))
++    return NextResponse.json({ error: 'No se pudo actualizar la venta' }, { status: 500 })
++  }
++}
+diff --git a/src/app/api/tienda/ventas/route.ts b/src/app/api/tienda/ventas/route.ts
+new file mode 100644
+index 0000000..2e15af8
+--- /dev/null
++++ b/src/app/api/tienda/ventas/route.ts
+@@ -0,0 +1,75 @@
++import { NextResponse } from 'next/server'
++import { requireRole } from '@/lib/supabase/require-role'
++import { faltaMigracion, MENSAJE_FALTA_MIGRACION, tiendaAdmin } from '@/lib/tienda/db'
++import { detalleError } from '@/lib/tienda/respuestas'
++import {
++  ESTADOS_VENTA,
++  esEstadoVenta,
++  type EstadoVenta,
++  type RespuestaVentasStaff,
++  type TiendaVentaRow,
++} from '@/lib/tienda/tipos'
++import { aVentaStaff, cargarItems, COLUMNAS_VENTA, nombresDePerfiles, vencerPendientes } from '@/lib/tienda/ventas'
++
++// ---------------------------------------------------------------------------
++// GET /api/tienda/ventas?estado=pendiente_pago|pagado|retirado|cancelado
++// ---------------------------------------------------------------------------
++// Ventas de la tienda web para la pantalla /tienda. Socio, encargado y
++// barista. Incluye teléfono y email del cliente (es para el equipo), los
++// items y cuántas ventas hay en cada estado (para las pestañas).
++// Últimas 200, de la más nueva a la más vieja.
++// ---------------------------------------------------------------------------
++
++export const dynamic = 'force-dynamic'
++
++const LIMITE = 200
++
++export async function GET(request: Request) {
++  const auth = await requireRole(['socio', 'encargado', 'barista'])
++  if (auth.response) return auth.response
++
++  const estadoParam = new URL(request.url).searchParams.get('estado')
++  if (estadoParam !== null && !esEstadoVenta(estadoParam)) {
++    return NextResponse.json({ error: 'Estado inválido' }, { status: 400 })
++  }
++  const estado: EstadoVenta | null = estadoParam
++
++  try {
++    const admin = tiendaAdmin()
++    await vencerPendientes(admin)
++
++    let q = admin.from('tienda_ventas').select(COLUMNAS_VENTA).order('created_at', { ascending: false }).limit(LIMITE)
++    if (estado) q = q.eq('estado', estado)
++
++    const [lista, ...conteos] = await Promise.all([
++      q,
++      ...ESTADOS_VENTA.map((e) =>
++        admin.from('tienda_ventas').select('id', { count: 'exact', head: true }).eq('estado', e),
++      ),
++    ])
++    if (lista.error) throw lista.error
++
++    const filas = (lista.data ?? []) as unknown as TiendaVentaRow[]
++    const [items, nombres] = await Promise.all([
++      cargarItems(admin, filas.map((f) => f.id)),
++      nombresDePerfiles(
++        admin,
++        filas.flatMap((f) => [f.pagado_por, f.retirado_por, f.cancelado_por]),
++      ),
++    ])
++
++    const respuesta: RespuestaVentasStaff = {
++      ventas: filas.map((f) => aVentaStaff(f, items.get(f.id) ?? [], nombres)),
++      conteos: Object.fromEntries(
++        ESTADOS_VENTA.map((e, i) => [e, conteos[i]?.count ?? 0]),
++      ) as Record<EstadoVenta, number>,
++    }
++    return NextResponse.json(respuesta, { headers: { 'Cache-Control': 'no-store' } })
++  } catch (err) {
++    if (faltaMigracion(err)) {
++      return NextResponse.json({ error: MENSAJE_FALTA_MIGRACION, migracion_pendiente: true }, { status: 503 })
++    }
++    console.error('[tienda] GET /api/tienda/ventas:', detalleError(err))
++    return NextResponse.json({ error: 'No se pudieron cargar las ventas web' }, { status: 500 })
++  }
++}
+diff --git a/src/components/layout/BottomNav.tsx b/src/components/layout/BottomNav.tsx
+index 5c1df7c..8ef16e9 100644
+--- a/src/components/layout/BottomNav.tsx
++++ b/src/components/layout/BottomNav.tsx
+@@ -30,6 +30,7 @@ import {
+   ScanFace,
+   Sparkles,
+   Wifi,
++  ShoppingBag,
+ } from 'lucide-react'
+ import type { LucideIcon } from 'lucide-react'
+ import type { AppRole } from '@/types/database'
+@@ -122,6 +123,7 @@ const SOCIO_MORE: ExpandableNavItem = {
+       label: 'Operación',
+       items: [
+         { label: 'Ventas', href: '/ventas', icon: BarChart3, description: 'Facturación y tickets sincronizados desde Fudo' },
++        { label: 'Tienda web', href: '/tienda', icon: ShoppingBag, description: 'Ventas de la web: cobrar y entregar' },
+         { label: 'Reportes', href: '/admin/reportes', icon: BookOpen, description: 'Food cost, márgenes y ventas por período' },
+         { label: 'Protocolos', href: '/protocolos', icon: Sparkles, description: 'Limpieza del baño: asignar, foto y registro' },
+         { label: 'Salón', href: '/salon', icon: Armchair, description: 'Tareas y control del servicio' },
+@@ -159,6 +161,7 @@ const ENCARGADO_MORE: ExpandableNavItem = {
+     {
+       label: 'Operación',
+       items: [
++        { label: 'Tienda web', href: '/tienda', icon: ShoppingBag, description: 'Ventas de la web: cobrar y entregar' },
+         { label: 'Reportes', href: '/admin/reportes', icon: BookOpen, description: 'Food cost, márgenes y ventas por período' },
+         { label: 'Protocolos', href: '/protocolos', icon: Sparkles, description: 'Limpieza del baño: asignar, foto y registro' },
+         { label: 'Salón', href: '/salon', icon: Armchair, description: 'Servicio y tareas del salón' },
+@@ -232,6 +235,7 @@ const BARISTA_MORE: ExpandableNavItem = {
+       items: [
+         { label: 'Horarios', href: '/mis-horarios', icon: Calendar, description: 'Mis turnos y con quién trabajo' },
+         { label: 'Vajilla', href: '/vajilla', icon: Wine, description: 'Controlar roturas y faltantes' },
++        { label: 'Tienda web', href: '/tienda', icon: ShoppingBag, description: 'Ventas de la web: cobrar y entregar' },
+         { label: 'La Vieja', href: '/asistente', icon: Bot, description: 'Consultar por chat' },
+       ],
+     },
+diff --git a/src/components/layout/TopBar.tsx b/src/components/layout/TopBar.tsx
+index a73faf1..c5bfd48 100644
+--- a/src/components/layout/TopBar.tsx
++++ b/src/components/layout/TopBar.tsx
+@@ -46,6 +46,7 @@ export function TopBar() {
+     '/admin/stock/mapeo': 'Mapeo Fudo',
+     '/admin/recetas/pending': 'Recetas Pendientes',
+     '/admin/fudo': 'Fudo',
++    '/tienda': 'Tienda web',
+   }
+   const pageTitle = PAGE_TITLES[pathname] ?? ''
+ 
+diff --git a/src/lib/audit.ts b/src/lib/audit.ts
+index b16381c..2f3ada4 100644
+--- a/src/lib/audit.ts
++++ b/src/lib/audit.ts
+@@ -13,7 +13,7 @@ export type AuditParams = {
+   userId: string | null
+   userName: string | null
+   action: string
+-  module: 'stock' | 'barra' | 'cocina' | 'pedidos' | 'avisos' | 'expedientes' | 'vajilla' | 'asistencia' | 'equipo' | 'recetas' | 'proveedores' | 'auth' | 'produccion' | 'configuracion' | 'turnos'
++  module: 'stock' | 'barra' | 'cocina' | 'pedidos' | 'avisos' | 'expedientes' | 'vajilla' | 'asistencia' | 'equipo' | 'recetas' | 'proveedores' | 'auth' | 'produccion' | 'configuracion' | 'turnos' | 'tienda'
+   entityType?: string
+   entityId?: string
+   description: string
+diff --git a/src/lib/push/notify-event.ts b/src/lib/push/notify-event.ts
+index cdcfc71..77ea84a 100644
+--- a/src/lib/push/notify-event.ts
++++ b/src/lib/push/notify-event.ts
+@@ -96,6 +96,13 @@ export const DEFAULT_NOTIFICATION_EVENTS: Record<string, NotificationEventConfig
+     target_roles: ['socio', 'encargado', 'chef', 'barista', 'runner', 'cocina', 'bacha'],
+     target_user_ids: [],
+   },
++  tienda_venta_nueva: {
++    label: 'Nueva venta web',
++    description: 'Un cliente compró desde la web (pendiente de transferencia).',
++    enabled: true,
++    target_roles: ['socio', 'encargado'],
++    target_user_ids: [],
++  },
+ }
+ 
+ export type NotificationEventKey = keyof typeof DEFAULT_NOTIFICATION_EVENTS
+diff --git a/src/lib/tienda/auth.ts b/src/lib/tienda/auth.ts
+new file mode 100644
+index 0000000..e274fa3
+--- /dev/null
++++ b/src/lib/tienda/auth.ts
+@@ -0,0 +1,75 @@
++import { createHash, timingSafeEqual } from 'node:crypto'
++import type { NextResponse } from 'next/server'
++import { errorPublico } from './respuestas'
++import { CONTRATO_VERSION, type ErrorRespuesta } from './tipos'
++
++// ---------------------------------------------------------------------------
++// Autenticación de las rutas públicas de la tienda (/api/tienda/publico/*)
++// ---------------------------------------------------------------------------
++// La landing manda en cada llamada:
++//   Authorization: Bearer <TIENDA_API_SECRET>
++//   X-Contrato-Version: 1
++// Sin TIENDA_API_SECRET (o con uno de menos de 32 caracteres) las rutas
++// responden 503 SIEMPRE: nunca quedan abiertas por un olvido de configuración.
++// ---------------------------------------------------------------------------
++
++/** Largo mínimo del secreto. Generarlo con: openssl rand -hex 32 (64 caracteres). */
++export const LARGO_MINIMO_SECRETO = 32
++
++/** El secreto configurado, o null si falta o es demasiado corto. */
++function secretoConfigurado(): string | null {
++  const s = process.env.TIENDA_API_SECRET?.trim()
++  return s && s.length >= LARGO_MINIMO_SECRETO ? s : null
++}
++
++export function tiendaSecretoConfigurado(): boolean {
++  return secretoConfigurado() !== null
++}
++
++/**
++ * Compara dos textos en tiempo constante. Se comparan sus sha-256 para que
++ * los buffers tengan siempre el mismo largo y no se filtre el largo del secreto.
++ */
++export function igualesEnTiempoConstante(a: string, b: string): boolean {
++  const ha = createHash('sha256').update(a, 'utf8').digest()
++  const hb = createHash('sha256').update(b, 'utf8').digest()
++  return timingSafeEqual(ha, hb)
++}
++
++/**
++ * Verifica `Authorization: Bearer <TIENDA_API_SECRET>`.
++ * Devuelve null si está bien, o la respuesta de error lista para retornar.
++ */
++export function verificarSecreto(request: Request): NextResponse<ErrorRespuesta> | null {
++  const esperado = secretoConfigurado()
++  if (!esperado) {
++    console.error('[tienda] TIENDA_API_SECRET no está configurado (o tiene menos de 32 caracteres): la tienda web está cerrada')
++    return errorPublico('error_interno', 'La tienda web de esta sucursal no está configurada.', { status: 503 })
++  }
++
++  const header = request.headers.get('authorization') ?? ''
++  const match = /^Bearer[ ]+(.+)$/i.exec(header.trim())
++  const recibido = match?.[1]?.trim() ?? ''
++  // Se compara igual aunque venga vacío, para no responder más rápido en ese caso.
++  const ok = igualesEnTiempoConstante(recibido, esperado)
++  if (!ok || !recibido) {
++    return errorPublico('no_autorizado', 'Secreto inválido.')
++  }
++  return null
++}
++
++/** Si viene X-Contrato-Version, tiene que ser la nuestra. */
++export function verificarVersion(request: Request): NextResponse<ErrorRespuesta> | null {
++  const version = request.headers.get('x-contrato-version')
++  if (version !== null && version.trim() !== String(CONTRATO_VERSION)) {
++    return errorPublico('datos_invalidos', `Versión de contrato no soportada (esperada ${CONTRATO_VERSION}).`, {
++      campo: 'X-Contrato-Version',
++    })
++  }
++  return null
++}
++
++/** Secreto + versión: lo primero que hace cada ruta pública. */
++export function protegerRutaPublica(request: Request): NextResponse<ErrorRespuesta> | null {
++  return verificarSecreto(request) ?? verificarVersion(request)
++}
+diff --git a/src/lib/tienda/config.ts b/src/lib/tienda/config.ts
+new file mode 100644
+index 0000000..970360d
+--- /dev/null
++++ b/src/lib/tienda/config.ts
+@@ -0,0 +1,408 @@
++import type { TiendaDb } from './db'
++import type {
++  ConfigPatchBody,
++  DatosPago,
++  DatosRetiro,
++  Opcion,
++  Producto,
++  ProductoStaff,
++  TiendaConfig,
++  TiendaProductoRow,
++} from './tipos'
++
++// ---------------------------------------------------------------------------
++// Tienda web — configuración (app_settings 'tienda') y productos
++// ---------------------------------------------------------------------------
++
++export const SETTINGS_KEY = 'tienda'
++
++/** Lo mismo que siembra la migración: arranca apagada. */
++export const CONFIG_DEFAULT: TiendaConfig = {
++  venta_habilitada: false,
++  mensaje: null,
++  pago: { alias: null, cbu: null, titular: null, banco: null, cuit: null },
++  whatsapp: null,
++  retiro: { direccion: null, horario: null, indicaciones: null },
++  vencimiento_horas: 48,
++}
++
++/** Tope de horas de reserva (el mismo que aplica tienda_crear_venta). */
++export const VENCIMIENTO_MAX_HORAS = 720
++
++const PREFIJO_REGEX = /^[A-Z0-9-]{2,12}$/
++
++/**
++ * Prefijo de los códigos de venta de esta sucursal: TIENDA_PREFIJO_CODIGO
++ * (WEB-SF en Santa Fe, WEB-24 en la 24). Si falta o es inválido, 'WEB'.
++ */
++export function prefijoCodigo(): string {
++  const p = process.env.TIENDA_PREFIJO_CODIGO?.trim().toUpperCase()
++  return p && PREFIJO_REGEX.test(p) ? p : 'WEB'
++}
++
++/* ------------------------------------------------------------------ */
++/* Lectura defensiva                                                   */
++/* ------------------------------------------------------------------ */
++
++function texto(v: unknown, max = 300): string | null {
++  if (typeof v !== 'string') return null
++  const t = v.trim()
++  return t.length > 0 ? t.slice(0, max) : null
++}
++
++function esObjeto(v: unknown): v is Record<string, unknown> {
++  return typeof v === 'object' && v !== null && !Array.isArray(v)
++}
++
++/**
++ * Normaliza lo guardado en app_settings a la forma del contrato. Si alguien
++ * editó el JSON a mano y dejó algo raro, se cae al default de ese campo en
++ * lugar de mandarle a la landing algo que no valida.
++ */
++export function normalizarConfig(value: unknown): TiendaConfig {
++  const v = esObjeto(value) ? value : {}
++  const pago = esObjeto(v.pago) ? v.pago : {}
++  const retiro = esObjeto(v.retiro) ? v.retiro : {}
++  const wa = typeof v.whatsapp === 'string' ? v.whatsapp.replace(/\D/g, '') : ''
++  const horas = v.vencimiento_horas
++  return {
++    venta_habilitada: v.venta_habilitada === true,
++    mensaje: texto(v.mensaje, 280),
++    pago: {
++      alias: texto(pago.alias, 40),
++      cbu: texto(pago.cbu, 40),
++      titular: texto(pago.titular, 120),
++      banco: texto(pago.banco, 80),
++      cuit: texto(pago.cuit, 20),
++    },
++    whatsapp: /^\d{10,15}$/.test(wa) ? wa : null,
++    retiro: {
++      direccion: texto(retiro.direccion, 200),
++      horario: texto(retiro.horario, 200),
++      indicaciones: texto(retiro.indicaciones, 300),
++    },
++    vencimiento_horas:
++      typeof horas === 'number' && Number.isInteger(horas) && horas > 0
++        ? Math.min(horas, VENCIMIENTO_MAX_HORAS)
++        : CONFIG_DEFAULT.vencimiento_horas,
++  }
++}
++
++export async function leerConfig(admin: TiendaDb): Promise<TiendaConfig> {
++  const { data, error } = await admin.from('app_settings').select('value').eq('key', SETTINGS_KEY).maybeSingle()
++  if (error) throw error
++  return normalizarConfig((data as { value?: unknown } | null)?.value)
++}
++
++/* ------------------------------------------------------------------ */
++/* Productos                                                           */
++/* ------------------------------------------------------------------ */
++
++export const COLUMNAS_PRODUCTO =
++  'id, slug, nombre, descripcion, presentacion, precio, disponible, opciones, max_por_pedido, orden, created_at, updated_at'
++
++/**
++ * Opciones con la forma del contrato. Se descartan las mal armadas (sin id,
++ * sin nombre o sin valores) para que la landing no rechace el catálogo entero.
++ */
++export function normalizarOpciones(v: unknown): Opcion[] {
++  if (!Array.isArray(v)) return []
++  const out: Opcion[] = []
++  for (const o of v) {
++    if (!esObjeto(o)) continue
++    const id = texto(o.id, 60)
++    const nombre = texto(o.nombre, 80)
++    if (!id || !nombre || !Array.isArray(o.valores)) continue
++    const valores = o.valores
++      .filter(esObjeto)
++      .map((x) => ({ id: texto(x.id, 60), nombre: texto(x.nombre, 120) }))
++      .filter((x): x is { id: string; nombre: string } => Boolean(x.id && x.nombre))
++    if (valores.length === 0) continue
++    out.push({ id, nombre, requerida: o.requerida === true, valores })
++  }
++  return out
++}
++
++function maxPorPedido(v: unknown): number {
++  return typeof v === 'number' && Number.isInteger(v) && v >= 1 ? Math.min(v, 20) : 1
++}
++
++/** Producto para la landing: sin precio cargado no está disponible. */
++export function aProductoPublico(row: TiendaProductoRow): Producto {
++  const precio = Number(row.precio)
++  const precioOk = Number.isFinite(precio) && precio > 0
++  return {
++    id: row.id,
++    slug: row.slug,
++    nombre: row.nombre,
++    descripcion: row.descripcion,
++    presentacion: row.presentacion,
++    precio: precioOk ? precio : 0,
++    disponible: Boolean(row.disponible) && precioOk,
++    opciones: normalizarOpciones(row.opciones),
++    max_por_pedido: maxPorPedido(row.max_por_pedido),
++  }
++}
++
++export function aProductoStaff(row: TiendaProductoRow): ProductoStaff {
++  const precio = Number(row.precio)
++  return {
++    id: row.id,
++    slug: row.slug,
++    nombre: row.nombre,
++    descripcion: row.descripcion,
++    presentacion: row.presentacion,
++    precio: Number.isFinite(precio) ? precio : 0,
++    disponible: Boolean(row.disponible),
++    max_por_pedido: maxPorPedido(row.max_por_pedido),
++    orden: row.orden,
++  }
++}
++
++export async function leerProductos(admin: TiendaDb): Promise<TiendaProductoRow[]> {
++  const { data, error } = await admin
++    .from('tienda_productos')
++    .select(COLUMNAS_PRODUCTO)
++    .order('orden', { ascending: true })
++    .order('nombre', { ascending: true })
++  if (error) throw error
++  return (data ?? []) as unknown as TiendaProductoRow[]
++}
++
++/* ------------------------------------------------------------------ */
++/* Validación de los ajustes que manda el staff                        */
++/* ------------------------------------------------------------------ */
++
++type Fallo = { ok: false; error: string; campo: string }
++type Ok<T> = { ok: true; data: T }
++
++const ALIAS_REGEX = /^[A-Za-z0-9.-]{6,20}$/
++
++/**
++ * Campo de texto opcional del PATCH: undefined = no cambia; null o "" = se borra.
++ * Devuelve el valor recortado o un fallo si es demasiado largo o no es texto.
++ */
++function textoOpcional(
++  v: unknown,
++  campo: string,
++  max: number,
++): { ok: true; cambia: false } | { ok: true; cambia: true; valor: string | null } | Fallo {
++  if (v === undefined) return { ok: true, cambia: false }
++  if (v === null) return { ok: true, cambia: true, valor: null }
++  if (typeof v !== 'string') return { ok: false, error: 'Tiene que ser texto.', campo }
++  const t = v.trim()
++  if (t.length > max) return { ok: false, error: `Puede tener hasta ${max} caracteres.`, campo }
++  return { ok: true, cambia: true, valor: t.length > 0 ? t : null }
++}
++
++/**
++ * Aplica los cambios de `patch` sobre la config actual, validando cada campo.
++ * Devuelve la config completa resultante (lista para guardar).
++ */
++export function aplicarPatchConfig(actual: TiendaConfig, patch: unknown): Ok<TiendaConfig> | Fallo {
++  if (patch === undefined) return { ok: true, data: actual }
++  if (!esObjeto(patch)) return { ok: false, error: 'Ajustes mal armados.', campo: 'config' }
++  const p = patch as NonNullable<ConfigPatchBody['config']> & Record<string, unknown>
++  const nueva: TiendaConfig = {
++    ...actual,
++    pago: { ...actual.pago },
++    retiro: { ...actual.retiro },
++  }
++
++  if (p.venta_habilitada !== undefined) {
++    if (typeof p.venta_habilitada !== 'boolean') {
++      return { ok: false, error: 'Tiene que ser sí o no.', campo: 'config.venta_habilitada' }
++    }
++    nueva.venta_habilitada = p.venta_habilitada
++  }
++
++  const mensaje = textoOpcional(p.mensaje, 'config.mensaje', 280)
++  if (!mensaje.ok) return mensaje
++  if (mensaje.cambia) nueva.mensaje = mensaje.valor
++
++  if (p.whatsapp !== undefined) {
++    if (p.whatsapp === null || (typeof p.whatsapp === 'string' && p.whatsapp.trim() === '')) {
++      nueva.whatsapp = null
++    } else if (typeof p.whatsapp === 'string') {
++      const wa = p.whatsapp.replace(/[\s()+-]/g, '')
++      if (!/^\d{10,15}$/.test(wa)) {
++        return {
++          ok: false,
++          error: 'El WhatsApp va con código de país y sin el 15, solo números: 549381XXXXXXX.',
++          campo: 'config.whatsapp',
++        }
++      }
++      nueva.whatsapp = wa
++    } else {
++      return { ok: false, error: 'Tiene que ser texto.', campo: 'config.whatsapp' }
++    }
++  }
++
++  if (p.vencimiento_horas !== undefined) {
++    const h = p.vencimiento_horas
++    if (typeof h !== 'number' || !Number.isInteger(h) || h < 1 || h > VENCIMIENTO_MAX_HORAS) {
++      return {
++        ok: false,
++        error: `Las horas de reserva van de 1 a ${VENCIMIENTO_MAX_HORAS}.`,
++        campo: 'config.vencimiento_horas',
++      }
++    }
++    nueva.vencimiento_horas = h
++  }
++
++  if (p.pago !== undefined) {
++    if (!esObjeto(p.pago)) return { ok: false, error: 'Datos de pago mal armados.', campo: 'config.pago' }
++    const pago = p.pago as Partial<DatosPago>
++
++    const alias = textoOpcional(pago.alias, 'config.pago.alias', 20)
++    if (!alias.ok) return alias
++    if (alias.cambia) {
++      if (alias.valor !== null && !ALIAS_REGEX.test(alias.valor)) {
++        return {
++          ok: false,
++          error: 'El alias tiene entre 6 y 20 caracteres: letras, números, puntos o guiones.',
++          campo: 'config.pago.alias',
++        }
++      }
++      nueva.pago.alias = alias.valor
++    }
++
++    const cbu = textoOpcional(pago.cbu, 'config.pago.cbu', 40)
++    if (!cbu.ok) return cbu
++    if (cbu.cambia) {
++      const limpio = cbu.valor?.replace(/[\s-]/g, '') ?? null
++      if (limpio !== null && !/^\d{22}$/.test(limpio)) {
++        return { ok: false, error: 'El CBU/CVU tiene 22 números.', campo: 'config.pago.cbu' }
++      }
++      nueva.pago.cbu = limpio
++    }
++
++    const titular = textoOpcional(pago.titular, 'config.pago.titular', 120)
++    if (!titular.ok) return titular
++    if (titular.cambia) nueva.pago.titular = titular.valor
++
++    const banco = textoOpcional(pago.banco, 'config.pago.banco', 80)
++    if (!banco.ok) return banco
++    if (banco.cambia) nueva.pago.banco = banco.valor
++
++    const cuit = textoOpcional(pago.cuit, 'config.pago.cuit', 20)
++    if (!cuit.ok) return cuit
++    if (cuit.cambia) {
++      if (cuit.valor !== null && cuit.valor.replace(/\D/g, '').length !== 11) {
++        return { ok: false, error: 'El CUIT tiene 11 números (20-12345678-9).', campo: 'config.pago.cuit' }
++      }
++      nueva.pago.cuit = cuit.valor
++    }
++  }
++
++  if (p.retiro !== undefined) {
++    if (!esObjeto(p.retiro)) return { ok: false, error: 'Datos de retiro mal armados.', campo: 'config.retiro' }
++    const retiro = p.retiro as Partial<DatosRetiro>
++    const campos: Array<[keyof DatosRetiro, number]> = [
++      ['direccion', 200],
++      ['horario', 200],
++      ['indicaciones', 300],
++    ]
++    for (const [k, max] of campos) {
++      const r = textoOpcional(retiro[k], `config.retiro.${k}`, max)
++      if (!r.ok) return r
++      if (r.cambia) nueva.retiro[k] = r.valor
++    }
++  }
++
++  // No se puede abrir la venta sin dónde cobrar ni dónde recibir el comprobante.
++  if (nueva.venta_habilitada) {
++    if (!nueva.pago.alias && !nueva.pago.cbu) {
++      return {
++        ok: false,
++        error: 'Cargá el alias o el CBU antes de activar la venta web.',
++        campo: 'config.pago.alias',
++      }
++    }
++    if (!nueva.whatsapp) {
++      return {
++        ok: false,
++        error: 'Cargá el WhatsApp donde llegan los comprobantes antes de activar la venta web.',
++        campo: 'config.whatsapp',
++      }
++    }
++  }
++
++  return { ok: true, data: nueva }
++}
++
++export type CambioProducto = {
++  id: string
++  cambios: Partial<Pick<TiendaProductoRow, 'nombre' | 'descripcion' | 'disponible' | 'max_por_pedido'>> & {
++    precio?: number
++  }
++}
++
++/** Valida los cambios de productos. `actuales` sirve para chequear que existan y el precio final. */
++export function validarPatchProductos(
++  patch: unknown,
++  actuales: TiendaProductoRow[],
++): Ok<CambioProducto[]> | Fallo {
++  if (patch === undefined) return { ok: true, data: [] }
++  if (!Array.isArray(patch) || patch.length > 50) {
++    return { ok: false, error: 'Productos mal armados.', campo: 'productos' }
++  }
++  const out: CambioProducto[] = []
++  for (let i = 0; i < patch.length; i++) {
++    const base = `productos.${i}`
++    const p = patch[i]
++    if (!esObjeto(p) || typeof p.id !== 'string') return { ok: false, error: 'Producto mal armado.', campo: base }
++    const actual = actuales.find((a) => a.id === p.id)
++    if (!actual) return { ok: false, error: 'Ese producto no existe.', campo: `${base}.id` }
++
++    const cambios: CambioProducto['cambios'] = {}
++
++    if (p.precio !== undefined) {
++      const precio = p.precio
++      if (typeof precio !== 'number' || !Number.isFinite(precio) || precio < 0 || precio > 10_000_000) {
++        return { ok: false, error: 'Precio inválido.', campo: `${base}.precio` }
++      }
++      cambios.precio = Math.round(precio * 100) / 100
++    }
++
++    if (p.disponible !== undefined) {
++      if (typeof p.disponible !== 'boolean') {
++        return { ok: false, error: 'Tiene que ser sí o no.', campo: `${base}.disponible` }
++      }
++      cambios.disponible = p.disponible
++    }
++
++    if (p.nombre !== undefined) {
++      const n = typeof p.nombre === 'string' ? p.nombre.trim() : ''
++      if (n.length < 2 || n.length > 80) {
++        return { ok: false, error: 'El nombre va de 2 a 80 caracteres.', campo: `${base}.nombre` }
++      }
++      cambios.nombre = n
++    }
++
++    const desc = textoOpcional(p.descripcion, `${base}.descripcion`, 300)
++    if (!desc.ok) return desc
++    if (desc.cambia) cambios.descripcion = desc.valor
++
++    if (p.max_por_pedido !== undefined) {
++      const m = p.max_por_pedido
++      if (typeof m !== 'number' || !Number.isInteger(m) || m < 1 || m > 20) {
++        return { ok: false, error: 'El máximo por pedido va de 1 a 20.', campo: `${base}.max_por_pedido` }
++      }
++      cambios.max_por_pedido = m
++    }
++
++    const precioFinal = cambios.precio ?? Number(actual.precio)
++    const disponibleFinal = cambios.disponible ?? actual.disponible
++    if (disponibleFinal && !(precioFinal > 0)) {
++      return {
++        ok: false,
++        error: `Poné un precio a "${cambios.nombre ?? actual.nombre}" antes de marcarlo disponible.`,
++        campo: `${base}.precio`,
++      }
++    }
++
++    if (Object.keys(cambios).length > 0) out.push({ id: p.id, cambios })
++  }
++  return { ok: true, data: out }
++}
+diff --git a/src/lib/tienda/db.ts b/src/lib/tienda/db.ts
+new file mode 100644
+index 0000000..4f57afc
+--- /dev/null
++++ b/src/lib/tienda/db.ts
+@@ -0,0 +1,30 @@
++import type { SupabaseClient } from '@supabase/supabase-js'
++import { createAdminClient } from '@/lib/supabase/admin'
++
++// ---------------------------------------------------------------------------
++// Cliente service_role para las tablas tienda_*.
++// ---------------------------------------------------------------------------
++// Las tablas nuevas no están en src/types/database.ts (ese archivo difiere
++// entre sucursales y no lo tocamos), así que se usa el cliente sin tipar y
++// cada consulta castea a los tipos de ./tipos. Solo server-side.
++// Tira si faltan NEXT_PUBLIC_SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY: las
++// rutas lo envuelven en try/catch y responden 500 controlado.
++// ---------------------------------------------------------------------------
++
++export type TiendaDb = SupabaseClient
++
++export function tiendaAdmin(): TiendaDb {
++  return createAdminClient() as unknown as TiendaDb
++}
++
++/** ¿El error de Supabase es porque falta la migración (tabla o función inexistente)? */
++export function faltaMigracion(err: unknown): boolean {
++  if (!err || typeof err !== 'object') return false
++  const code = (err as { code?: unknown }).code
++  // 42P01 tabla inexistente · 42883 función inexistente ·
++  // PGRST202/PGRST205 PostgREST no la encuentra en su caché de esquema
++  return code === '42P01' || code === '42883' || code === 'PGRST202' || code === 'PGRST205'
++}
++
++export const MENSAJE_FALTA_MIGRACION =
++  'Falta aplicar la migración 20261004_tienda_web.sql en la base de esta sucursal.'
+diff --git a/src/lib/tienda/respuestas.ts b/src/lib/tienda/respuestas.ts
+new file mode 100644
+index 0000000..c7f4f03
+--- /dev/null
++++ b/src/lib/tienda/respuestas.ts
+@@ -0,0 +1,52 @@
++import { NextResponse } from 'next/server'
++import { STATUS_POR_ERROR, type CodigoError, type ErrorRespuesta } from './tipos'
++
++// ---------------------------------------------------------------------------
++// Respuestas de las rutas públicas de la tienda (/api/tienda/publico/*).
++// Todas salen con Cache-Control: no-store: son datos por pedido y cambian.
++// ---------------------------------------------------------------------------
++
++const SIN_CACHE = { 'Cache-Control': 'no-store' } as const
++
++export function jsonPublico<T>(body: T, status = 200): NextResponse<T> {
++  return NextResponse.json(body, { status, headers: SIN_CACHE })
++}
++
++/**
++ * Error con la forma del contrato: { error, codigo, campo? }.
++ * `campo` se omite si viene vacío o null (el contrato no admite null).
++ */
++export function errorPublico(
++  codigo: CodigoError,
++  error: string,
++  opts?: { campo?: string | null; status?: number },
++): NextResponse<ErrorRespuesta> {
++  const body: ErrorRespuesta = { error, codigo }
++  if (opts?.campo) body.campo = opts.campo
++  return jsonPublico(body, opts?.status ?? STATUS_POR_ERROR[codigo])
++}
++
++export const MENSAJE_ERROR_INTERNO = 'Tuvimos un problema para procesar el pedido. Probá de nuevo en un ratito.'
++
++export function errorInterno(): NextResponse<ErrorRespuesta> {
++  return errorPublico('error_interno', MENSAJE_ERROR_INTERNO)
++}
++
++/**
++ * 404 único para "no existe ese código" y "el token no corresponde".
++ * Es el mismo cuerpo a propósito: así no se puede averiguar qué códigos existen.
++ */
++export function noEncontrada(): NextResponse<ErrorRespuesta> {
++  return errorPublico('no_encontrada', 'No encontramos ese pedido.')
++}
++
++/** Detalle técnico de un error para el log, sin datos del cliente. */
++export function detalleError(err: unknown): string {
++  if (err && typeof err === 'object') {
++    const e = err as { code?: unknown; message?: unknown }
++    const code = typeof e.code === 'string' ? e.code : ''
++    const message = typeof e.message === 'string' ? e.message.slice(0, 200) : ''
++    return [code, message].filter(Boolean).join(' ') || 'error desconocido'
++  }
++  return typeof err === 'string' ? err.slice(0, 200) : 'error desconocido'
++}
+diff --git a/src/lib/tienda/tipos.ts b/src/lib/tienda/tipos.ts
+new file mode 100644
+index 0000000..14494b2
+--- /dev/null
++++ b/src/lib/tienda/tipos.ts
+@@ -0,0 +1,342 @@
++// ---------------------------------------------------------------------------
++// Tienda web — tipos
++// ---------------------------------------------------------------------------
++// 1) Contrato v1 con la landing de La Vieja Escuela (copia en TypeScript puro
++//    de src/lib/tienda/contrato.ts de la landing, que es la fuente de verdad;
++//    si cambia allá, cambia acá). Ver integracion-sucursales/CONTRATO.md.
++// 2) Filas de las tablas tienda_* (supabase/migrations/20261004_tienda_web.sql).
++//    No están en src/types/database.ts a propósito: ese archivo se regenera y
++//    difiere entre sucursales. Las consultas castean a estos tipos.
++// 3) Formas de la API interna del staff (/api/tienda/ventas y /api/tienda/config).
++// ---------------------------------------------------------------------------
++
++export const CONTRATO_VERSION = 1
++
++/* ------------------------------------------------------------------ */
++/* Estados                                                             */
++/* ------------------------------------------------------------------ */
++
++export const ESTADOS_VENTA = ['pendiente_pago', 'pagado', 'retirado', 'cancelado'] as const
++export type EstadoVenta = (typeof ESTADOS_VENTA)[number]
++
++export function esEstadoVenta(v: unknown): v is EstadoVenta {
++  return typeof v === 'string' && (ESTADOS_VENTA as readonly string[]).includes(v)
++}
++
++/* ------------------------------------------------------------------ */
++/* Catálogo (contrato)                                                 */
++/* ------------------------------------------------------------------ */
++
++export type OpcionValor = { id: string; nombre: string }
++
++export type Opcion = {
++  /** p. ej. "molienda" */
++  id: string
++  /** p. ej. "Molienda" */
++  nombre: string
++  requerida: boolean
++  valores: OpcionValor[]
++}
++
++export type Producto = {
++  id: string
++  slug: string
++  nombre: string
++  descripcion: string | null
++  /** p. ej. "250 g" */
++  presentacion: string | null
++  /** Pesos argentinos, IVA incluido. */
++  precio: number
++  disponible: boolean
++  opciones: Opcion[]
++  max_por_pedido: number
++}
++
++export type DatosPago = {
++  alias: string | null
++  cbu: string | null
++  titular: string | null
++  banco: string | null
++  cuit: string | null
++}
++
++export type DatosRetiro = {
++  direccion: string | null
++  horario: string | null
++  indicaciones: string | null
++}
++
++export type Catalogo = {
++  version: typeof CONTRATO_VERSION
++  /** Interruptor general de la sucursal: si es false no se aceptan ventas. */
++  venta_habilitada: boolean
++  /** Aviso opcional para mostrar arriba del formulario. */
++  mensaje: string | null
++  productos: Producto[]
++  pago: DatosPago
++  /** Formato internacional, solo dígitos (10 a 15): 549381XXXXXXX */
++  whatsapp: string | null
++  retiro: DatosRetiro
++  /** Horas que se reserva un pedido sin pagar antes de cancelarse. */
++  vencimiento_horas: number
++}
++
++/* ------------------------------------------------------------------ */
++/* Ventas (contrato)                                                   */
++/* ------------------------------------------------------------------ */
++
++export type ItemVenta = {
++  nombre: string
++  /** Opciones elegidas en texto: "Molido para espresso" */
++  detalle: string | null
++  cantidad: number
++  precio_unitario: number
++  subtotal: number
++}
++
++/** Lo que se devuelve a la landing. Nunca incluye el teléfono ni el email. */
++export type VentaPublica = {
++  /** Código humano, p. ej. "WEB-SF-0042" */
++  codigo: string
++  estado: EstadoVenta
++  total: number
++  items: ItemVenta[]
++  /** Solo el nombre de pila. */
++  cliente_nombre: string
++  creado_at: string
++  pagado_at: string | null
++  retirado_at: string | null
++  cancelado_at: string | null
++  vence_at: string
++  pago: DatosPago
++  whatsapp: string | null
++  retiro: DatosRetiro
++}
++
++/** Teléfono argentino tal como lo escribe la gente: "381 555-1234", "+54 9 381 5551234". */
++export const TELEFONO_REGEX = /^[+]?[\d\s()-]{8,20}$/
++
++export type ItemPedido = {
++  producto_id: string
++  cantidad: number
++  /** { [opcion.id]: valor.id }, p. ej. { molienda: "espresso" } */
++  opciones: Record<string, string>
++}
++
++export type Cliente = {
++  nombre: string
++  telefono: string
++  email: string | null
++}
++
++/** Body de POST /api/tienda/publico/ventas */
++export type CrearVentaBody = {
++  /** UUID generado por la landing; repetir la llamada con la misma clave no duplica la venta. */
++  idempotency_key: string
++  items: ItemPedido[]
++  cliente: Cliente
++  nota: string | null
++  origen: 'landing'
++}
++
++/** Respuesta 201 (o 200 si es una repetición idempotente) */
++export type CrearVentaRespuesta = {
++  venta: VentaPublica
++  /** Secreto para consultar el estado. Acá se guarda solo su hash. */
++  token: string
++}
++
++/** Respuesta 200 de GET /api/tienda/publico/ventas/{codigo} */
++export type ConsultarVentaRespuesta = { venta: VentaPublica }
++
++/* ------------------------------------------------------------------ */
++/* Errores (contrato)                                                  */
++/* ------------------------------------------------------------------ */
++
++export const CODIGOS_ERROR = [
++  'no_autorizado', // 401: falta o no coincide el secreto
++  'datos_invalidos', // 400: body mal formado; `campo` indica cuál
++  'opcion_invalida', // 400: una opción requerida falta o no existe
++  'venta_deshabilitada', // 409: la sucursal apagó la venta web
++  'producto_no_disponible', // 409: producto inexistente, sin stock o sin precio
++  'demasiados_pedidos', // 429: límite de pedidos pendientes por teléfono
++  'no_encontrada', // 404: código inexistente o token incorrecto (misma respuesta a propósito)
++  'error_interno', // 500
++] as const
++export type CodigoError = (typeof CODIGOS_ERROR)[number]
++
++export function esCodigoError(v: unknown): v is CodigoError {
++  return typeof v === 'string' && (CODIGOS_ERROR as readonly string[]).includes(v)
++}
++
++export type ErrorRespuesta = {
++  error: string
++  codigo: CodigoError
++  /** Ruta del dato con problema ("cliente.telefono", "items.0.cantidad"). Se omite si no aplica. */
++  campo?: string
++}
++
++/** Status HTTP que corresponde a cada código de error. */
++export const STATUS_POR_ERROR: Record<CodigoError, number> = {
++  no_autorizado: 401,
++  datos_invalidos: 400,
++  opcion_invalida: 400,
++  venta_deshabilitada: 409,
++  producto_no_disponible: 409,
++  demasiados_pedidos: 429,
++  no_encontrada: 404,
++  error_interno: 500,
++}
++
++/* ------------------------------------------------------------------ */
++/* Configuración guardada en app_settings (key = 'tienda')             */
++/* ------------------------------------------------------------------ */
++
++export type TiendaConfig = {
++  venta_habilitada: boolean
++  mensaje: string | null
++  pago: DatosPago
++  whatsapp: string | null
++  retiro: DatosRetiro
++  vencimiento_horas: number
++}
++
++/* ------------------------------------------------------------------ */
++/* Filas de las tablas                                                 */
++/* ------------------------------------------------------------------ */
++
++/** numeric de Postgres: PostgREST lo manda como number, pero por las dudas aceptamos string. */
++type Numerico = number | string
++
++export type TiendaProductoRow = {
++  id: string
++  slug: string
++  nombre: string
++  descripcion: string | null
++  presentacion: string | null
++  precio: Numerico
++  disponible: boolean
++  opciones: unknown
++  max_por_pedido: number
++  orden: number
++  created_at: string
++  updated_at: string
++}
++
++export type TiendaVentaRow = {
++  id: string
++  numero: number
++  codigo: string
++  token_hash: string
++  idempotency_key: string
++  estado: EstadoVenta
++  cliente_nombre: string
++  cliente_telefono: string
++  cliente_email: string | null
++  nota: string | null
++  total: Numerico
++  origen: string
++  vence_at: string
++  pagado_at: string | null
++  pagado_por: string | null
++  retirado_at: string | null
++  retirado_por: string | null
++  cancelado_at: string | null
++  cancelado_por: string | null
++  motivo_cancelacion: string | null
++  created_at: string
++  updated_at: string
++}
++
++export type TiendaVentaItemRow = {
++  id: string
++  venta_id: string
++  producto_id: string | null
++  nombre: string
++  detalle: string | null
++  opciones: unknown
++  cantidad: number
++  precio_unitario: Numerico
++  subtotal: Numerico
++  created_at: string
++}
++
++/** Respuesta de public.tienda_crear_venta() */
++export type ResultadoCrearVenta =
++  | { ok: true; repetida: boolean; venta_id: string; codigo: string }
++  | { ok: false; codigo: string; error: string; campo: string | null }
++
++/* ------------------------------------------------------------------ */
++/* API interna del staff                                               */
++/* ------------------------------------------------------------------ */
++
++/** Venta como la ve el equipo: con teléfono, email y quién la movió. */
++export type VentaStaff = {
++  id: string
++  codigo: string
++  estado: EstadoVenta
++  cliente_nombre: string
++  cliente_telefono: string
++  cliente_email: string | null
++  nota: string | null
++  total: number
++  items: ItemVenta[]
++  creado_at: string
++  vence_at: string
++  pagado_at: string | null
++  pagado_por_nombre: string | null
++  retirado_at: string | null
++  retirado_por_nombre: string | null
++  cancelado_at: string | null
++  cancelado_por_nombre: string | null
++  motivo_cancelacion: string | null
++}
++
++/** GET /api/tienda/ventas */
++export type RespuestaVentasStaff = {
++  ventas: VentaStaff[]
++  conteos: Record<EstadoVenta, number>
++}
++
++/** PATCH /api/tienda/ventas/[id] */
++export type CambioEstadoBody = {
++  estado: Exclude<EstadoVenta, 'pendiente_pago'>
++  motivo?: string | null
++}
++
++export type ProductoStaff = {
++  id: string
++  slug: string
++  nombre: string
++  descripcion: string | null
++  presentacion: string | null
++  precio: number
++  disponible: boolean
++  max_por_pedido: number
++  orden: number
++}
++
++/** GET y PATCH /api/tienda/config */
++export type RespuestaConfigStaff = {
++  config: TiendaConfig
++  productos: ProductoStaff[]
++  /** Prefijo de los códigos de esta sucursal (env TIENDA_PREFIJO_CODIGO). */
++  prefijo: string
++  /** Si TIENDA_API_SECRET está cargado (nunca se devuelve el valor). */
++  secreto_configurado: boolean
++}
++
++export type ConfigPatchBody = {
++  config?: Partial<Omit<TiendaConfig, 'pago' | 'retiro'>> & {
++    pago?: Partial<DatosPago>
++    retiro?: Partial<DatosRetiro>
++  }
++  productos?: Array<{
++    id: string
++    precio?: number
++    disponible?: boolean
++    nombre?: string
++    descripcion?: string | null
++    max_por_pedido?: number
++  }>
++}
+diff --git a/src/lib/tienda/validar.ts b/src/lib/tienda/validar.ts
+new file mode 100644
+index 0000000..e2b45f3
+--- /dev/null
++++ b/src/lib/tienda/validar.ts
+@@ -0,0 +1,160 @@
++import { TELEFONO_REGEX, type CrearVentaBody, type ItemPedido } from './tipos'
++
++// ---------------------------------------------------------------------------
++// Validación del body de POST /api/tienda/publico/ventas
++// ---------------------------------------------------------------------------
++// Equivale a CrearVentaBodySchema del contrato (la landing usa zod; esta app
++// no lo tiene, así que va a mano). Los errores traen `campo` con la misma ruta
++// que daría zod ("items.0.cantidad", "cliente.telefono"), índices desde 0.
++// La base vuelve a validar todo en tienda_crear_venta(): esto es la primera
++// barrera y la que da mensajes claros.
++// ---------------------------------------------------------------------------
++
++export type ResultadoValidacion<T> =
++  | { ok: true; data: T }
++  | { ok: false; error: string; campo?: string }
++
++const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
++// Mismo criterio que la migración (^[^@\s]+@[^@\s]+\.[^@\s]+$)
++const EMAIL_REGEX = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
++
++export const LIMITES_PEDIDO = {
++  itemsMin: 1,
++  itemsMax: 10,
++  cantidadMin: 1,
++  cantidadMax: 20,
++  nombreMin: 2,
++  nombreMax: 80,
++  notaMax: 300,
++  emailMax: 254,
++  opcionesMax: 10,
++} as const
++
++function esObjeto(v: unknown): v is Record<string, unknown> {
++  return typeof v === 'object' && v !== null && !Array.isArray(v)
++}
++
++function falla(error: string, campo?: string): { ok: false; error: string; campo?: string } {
++  return campo ? { ok: false, error, campo } : { ok: false, error }
++}
++
++function validarItem(v: unknown, i: number): ResultadoValidacion<ItemPedido> {
++  const base = `items.${i}`
++  if (!esObjeto(v)) return falla('Hay un producto mal cargado en el pedido.', base)
++
++  if (typeof v.producto_id !== 'string' || v.producto_id.trim().length === 0) {
++    return falla('Falta el producto.', `${base}.producto_id`)
++  }
++
++  const cantidad = v.cantidad
++  if (
++    typeof cantidad !== 'number' ||
++    !Number.isInteger(cantidad) ||
++    cantidad < LIMITES_PEDIDO.cantidadMin ||
++    cantidad > LIMITES_PEDIDO.cantidadMax
++  ) {
++    return falla(
++      `La cantidad tiene que ser un número entero entre ${LIMITES_PEDIDO.cantidadMin} y ${LIMITES_PEDIDO.cantidadMax}.`,
++      `${base}.cantidad`,
++    )
++  }
++
++  // opciones: { [opcion.id]: valor.id }. Se acepta que falte (= sin opciones);
++  // si el producto exige una, la base responde opcion_invalida con el campo exacto.
++  const opciones: Record<string, string> = {}
++  if (v.opciones !== undefined && v.opciones !== null) {
++    if (!esObjeto(v.opciones)) return falla('Las opciones del producto llegaron mal armadas.', `${base}.opciones`)
++    const entradas = Object.entries(v.opciones)
++    if (entradas.length > LIMITES_PEDIDO.opcionesMax) {
++      return falla('Demasiadas opciones para un producto.', `${base}.opciones`)
++    }
++    for (const [clave, valor] of entradas) {
++      if (typeof valor !== 'string' || valor.length === 0 || valor.length > 60 || clave.length > 60) {
++        return falla('Elegí una opción válida.', `${base}.opciones.${clave}`)
++      }
++      opciones[clave] = valor
++    }
++  }
++
++  return { ok: true, data: { producto_id: v.producto_id.trim(), cantidad, opciones } }
++}
++
++export function validarCrearVenta(body: unknown): ResultadoValidacion<CrearVentaBody> {
++  if (!esObjeto(body)) return falla('El pedido llegó vacío o mal armado.')
++
++  // idempotency_key
++  if (typeof body.idempotency_key !== 'string' || !UUID_REGEX.test(body.idempotency_key)) {
++    return falla('Falta la clave del pedido.', 'idempotency_key')
++  }
++
++  // origen: el contrato v1 solo conoce "landing"
++  if (body.origen !== undefined && body.origen !== 'landing') {
++    return falla('Origen del pedido inválido.', 'origen')
++  }
++
++  // items
++  if (!Array.isArray(body.items) || body.items.length < LIMITES_PEDIDO.itemsMin || body.items.length > LIMITES_PEDIDO.itemsMax) {
++    return falla(
++      `El pedido tiene que tener entre ${LIMITES_PEDIDO.itemsMin} y ${LIMITES_PEDIDO.itemsMax} productos.`,
++      'items',
++    )
++  }
++  const items: ItemPedido[] = []
++  for (let i = 0; i < body.items.length; i++) {
++    const r = validarItem(body.items[i], i)
++    if (!r.ok) return r
++    items.push(r.data)
++  }
++
++  // cliente
++  const c = body.cliente
++  if (!esObjeto(c)) return falla('Faltan tu nombre y tu teléfono.', 'cliente')
++
++  const nombre = typeof c.nombre === 'string' ? c.nombre.trim().replace(/\s+/g, ' ') : ''
++  if (nombre.length < LIMITES_PEDIDO.nombreMin) return falla('Escribí tu nombre', 'cliente.nombre')
++  if (nombre.length > LIMITES_PEDIDO.nombreMax) {
++    return falla(`El nombre puede tener hasta ${LIMITES_PEDIDO.nombreMax} letras.`, 'cliente.nombre')
++  }
++
++  const telefono = typeof c.telefono === 'string' ? c.telefono.trim() : ''
++  const digitos = telefono.replace(/\D/g, '')
++  if (!TELEFONO_REGEX.test(telefono) || digitos.length < 8 || digitos.length > 15) {
++    return falla('Revisá el teléfono: solo números, con característica', 'cliente.telefono')
++  }
++
++  let email: string | null = null
++  if (c.email !== undefined && c.email !== null) {
++    if (typeof c.email !== 'string') return falla('Revisá el email', 'cliente.email')
++    const e = c.email.trim()
++    if (e.length > 0) {
++      if (e.length > LIMITES_PEDIDO.emailMax || !EMAIL_REGEX.test(e)) return falla('Revisá el email', 'cliente.email')
++      email = e
++    }
++  }
++
++  // nota
++  let nota: string | null = null
++  if (body.nota !== undefined && body.nota !== null) {
++    if (typeof body.nota !== 'string') return falla('La nota tiene que ser texto.', 'nota')
++    const n = body.nota.trim()
++    if (n.length > LIMITES_PEDIDO.notaMax) {
++      return falla(`La nota puede tener hasta ${LIMITES_PEDIDO.notaMax} caracteres.`, 'nota')
++    }
++    nota = n.length > 0 ? n : null
++  }
++
++  return {
++    ok: true,
++    data: {
++      idempotency_key: body.idempotency_key.toLowerCase(),
++      items,
++      cliente: { nombre, telefono, email },
++      nota,
++      origen: 'landing',
++    },
++  }
++}
++
++export function esUuid(v: unknown): v is string {
++  return typeof v === 'string' && UUID_REGEX.test(v)
++}
+diff --git a/src/lib/tienda/ventas.ts b/src/lib/tienda/ventas.ts
+new file mode 100644
+index 0000000..7c1712f
+--- /dev/null
++++ b/src/lib/tienda/ventas.ts
+@@ -0,0 +1,213 @@
++import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
++import type { TiendaDb } from './db'
++import { detalleError } from './respuestas'
++import type {
++  ItemVenta,
++  TiendaConfig,
++  TiendaVentaItemRow,
++  TiendaVentaRow,
++  VentaPublica,
++  VentaStaff,
++} from './tipos'
++
++// ---------------------------------------------------------------------------
++// Tienda web — ventas: tokens, lectura y mapeo a la forma del contrato
++// ---------------------------------------------------------------------------
++
++/* ------------------------------------------------------------------ */
++/* Token del ticket                                                    */
++/* ------------------------------------------------------------------ */
++
++/**
++ * Token que la landing guarda en el link del ticket (#t=...). Acá se guarda
++ * solo su sha-256: con la base en la mano no se puede consultar un pedido.
++ */
++export function generarToken(): { token: string; hash: string } {
++  const token = randomBytes(32).toString('base64url') // 43 caracteres
++  return { token, hash: hashToken(token) }
++}
++
++/** sha-256 en hex minúscula (lo que espera tienda_crear_venta). */
++export function hashToken(token: string): string {
++  return createHash('sha256').update(token, 'utf8').digest('hex')
++}
++
++/** Compara dos hashes hex de sha-256 en tiempo constante. */
++export function hashesIguales(a: string, b: string): boolean {
++  const ba = Buffer.from(a, 'hex')
++  const bb = Buffer.from(b, 'hex')
++  if (ba.length !== 32 || bb.length !== 32) return false
++  return timingSafeEqual(ba, bb)
++}
++
++/** Forma plausible de un token: base64url de 32 a 128 caracteres. */
++export function tokenConForma(token: string | null): token is string {
++  return typeof token === 'string' && /^[A-Za-z0-9_-]{32,128}$/.test(token)
++}
++
++/** Forma plausible de un código de venta: "WEB-SF-0042". */
++export function codigoConForma(codigo: string): boolean {
++  return /^[A-Z0-9-]{3,40}$/.test(codigo)
++}
++
++/* ------------------------------------------------------------------ */
++/* Vencimiento perezoso                                                */
++/* ------------------------------------------------------------------ */
++
++/**
++ * Pasa a 'cancelado' (motivo 'vencido') las pendientes que ya vencieron.
++ * Se llama antes de leer, así no hace falta pg_cron (si está, mejor).
++ * Si falla, no corta la lectura: solo se loguea.
++ */
++export async function vencerPendientes(admin: TiendaDb): Promise<void> {
++  const { error } = await admin.rpc('tienda_vencer_pendientes')
++  if (error) console.error('[tienda] tienda_vencer_pendientes falló:', detalleError(error))
++}
++
++/* ------------------------------------------------------------------ */
++/* Lectura                                                             */
++/* ------------------------------------------------------------------ */
++
++export const COLUMNAS_VENTA =
++  'id, numero, codigo, token_hash, idempotency_key, estado, cliente_nombre, cliente_telefono, cliente_email, nota, total, origen, vence_at, pagado_at, pagado_por, retirado_at, retirado_por, cancelado_at, cancelado_por, motivo_cancelacion, created_at, updated_at'
++
++export const COLUMNAS_ITEM =
++  'id, venta_id, producto_id, nombre, detalle, opciones, cantidad, precio_unitario, subtotal, created_at'
++
++export type VentaConItems = { venta: TiendaVentaRow; items: TiendaVentaItemRow[] }
++
++/**
++ * Los items de una venta comparten created_at y no tienen columna de orden:
++ * se ordenan por nombre y detalle para que la respuesta sea siempre la misma.
++ */
++function ordenarItems(items: TiendaVentaItemRow[]): TiendaVentaItemRow[] {
++  return [...items].sort(
++    (a, b) =>
++      a.created_at.localeCompare(b.created_at) ||
++      a.nombre.localeCompare(b.nombre, 'es') ||
++      (a.detalle ?? '').localeCompare(b.detalle ?? '', 'es') ||
++      a.id.localeCompare(b.id),
++  )
++}
++
++export async function cargarItems(admin: TiendaDb, ventaIds: string[]): Promise<Map<string, TiendaVentaItemRow[]>> {
++  const porVenta = new Map<string, TiendaVentaItemRow[]>()
++  if (ventaIds.length === 0) return porVenta
++  const { data, error } = await admin.from('tienda_venta_items').select(COLUMNAS_ITEM).in('venta_id', ventaIds)
++  if (error) throw error
++  for (const it of (data ?? []) as unknown as TiendaVentaItemRow[]) {
++    const lista = porVenta.get(it.venta_id) ?? []
++    lista.push(it)
++    porVenta.set(it.venta_id, lista)
++  }
++  for (const [id, lista] of porVenta) porVenta.set(id, ordenarItems(lista))
++  return porVenta
++}
++
++/** Carga una venta con sus items, por id o por código. null si no existe. */
++export async function cargarVenta(
++  admin: TiendaDb,
++  por: { id: string } | { codigo: string },
++): Promise<VentaConItems | null> {
++  let q = admin.from('tienda_ventas').select(COLUMNAS_VENTA)
++  q = 'id' in por ? q.eq('id', por.id) : q.eq('codigo', por.codigo)
++  const { data, error } = await q.maybeSingle()
++  if (error) throw error
++  if (!data) return null
++  const venta = data as unknown as TiendaVentaRow
++  const items = await cargarItems(admin, [venta.id])
++  return { venta, items: items.get(venta.id) ?? [] }
++}
++
++/* ------------------------------------------------------------------ */
++/* Mapeos                                                              */
++/* ------------------------------------------------------------------ */
++
++/** "Juan Pérez" → "Juan" */
++export function nombreDePila(nombre: string): string {
++  return nombre.trim().split(/\s+/)[0] ?? nombre
++}
++
++function numero(v: number | string): number {
++  const n = Number(v)
++  return Number.isFinite(n) ? n : 0
++}
++
++export function aItemVenta(it: TiendaVentaItemRow): ItemVenta {
++  return {
++    nombre: it.nombre,
++    detalle: it.detalle,
++    cantidad: it.cantidad,
++    precio_unitario: numero(it.precio_unitario),
++    subtotal: numero(it.subtotal),
++  }
++}
++
++/**
++ * Venta para la landing. Nunca lleva teléfono, email, nota ni ids internos;
++ * del nombre, solo el de pila. Pago, WhatsApp y retiro salen de la config
++ * actual de la sucursal.
++ */
++export function aVentaPublica({ venta, items }: VentaConItems, config: TiendaConfig): VentaPublica {
++  return {
++    codigo: venta.codigo,
++    estado: venta.estado,
++    total: numero(venta.total),
++    items: items.map(aItemVenta),
++    cliente_nombre: nombreDePila(venta.cliente_nombre),
++    creado_at: venta.created_at,
++    pagado_at: venta.pagado_at,
++    retirado_at: venta.retirado_at,
++    cancelado_at: venta.cancelado_at,
++    vence_at: venta.vence_at,
++    pago: config.pago,
++    whatsapp: config.whatsapp,
++    retiro: config.retiro,
++  }
++}
++
++/** Nombres "Nombre Apellido" de los perfiles que movieron las ventas. */
++export async function nombresDePerfiles(admin: TiendaDb, ids: Array<string | null>): Promise<Map<string, string>> {
++  const unicos = [...new Set(ids.filter((x): x is string => Boolean(x)))]
++  const out = new Map<string, string>()
++  if (unicos.length === 0) return out
++  const { data } = await admin.from('profiles').select('id, first_name, last_name').in('id', unicos)
++  for (const p of (data ?? []) as Array<{ id: string; first_name: string | null; last_name: string | null }>) {
++    out.set(p.id, `${p.first_name ?? ''} ${p.last_name ?? ''}`.trim() || 'Alguien del equipo')
++  }
++  return out
++}
++
++/** Venta para el equipo: con teléfono, email, nota y quién la movió. */
++export function aVentaStaff(
++  venta: TiendaVentaRow,
++  items: TiendaVentaItemRow[],
++  nombres: Map<string, string>,
++): VentaStaff {
++  const quien = (id: string | null) => (id ? nombres.get(id) ?? 'Alguien del equipo' : null)
++  return {
++    id: venta.id,
++    codigo: venta.codigo,
++    estado: venta.estado,
++    cliente_nombre: venta.cliente_nombre,
++    cliente_telefono: venta.cliente_telefono,
++    cliente_email: venta.cliente_email,
++    nota: venta.nota,
++    total: numero(venta.total),
++    items: items.map(aItemVenta),
++    creado_at: venta.created_at,
++    vence_at: venta.vence_at,
++    pagado_at: venta.pagado_at,
++    pagado_por_nombre: quien(venta.pagado_por),
++    retirado_at: venta.retirado_at,
++    retirado_por_nombre: quien(venta.retirado_por),
++    cancelado_at: venta.cancelado_at,
++    cancelado_por_nombre: venta.cancelado_por ? quien(venta.cancelado_por) : null,
++    motivo_cancelacion: venta.motivo_cancelacion,
++  }
++}
++
++/** "$ 9.500" para textos del servidor (push, auditoría). */
++export function pesos(n: number): string {
++  return `$ ${Math.round(n).toLocaleString('es-AR')}`
++}
+diff --git a/supabase/migrations/20261004_tienda_web.sql b/supabase/migrations/20261004_tienda_web.sql
+new file mode 100644
+index 0000000..c877090
+--- /dev/null
++++ b/supabase/migrations/20261004_tienda_web.sql
+@@ -0,0 +1,523 @@
++-- ---------------------------------------------------------------------------
++-- Tienda web: venta de café (1/4 kg) desde la landing de La Vieja Escuela
++-- ---------------------------------------------------------------------------
++-- La landing (laviejaescuela) no tiene base: cada pedido vive en la base de la
++-- sucursal donde se compró. El cliente elige molienda y cantidad, deja nombre y
++-- WhatsApp, y la landing llama a /api/tienda/publico/ventas de ESTA app, que
++-- crea la venta con public.tienda_crear_venta() en estado 'pendiente_pago'.
++-- El cliente transfiere al alias de app_settings 'tienda', manda el comprobante
++-- por WhatsApp y el equipo la marca 'pagado' y después 'retirado' desde la app.
++-- Las pendientes vencen solas (tienda_vencer_pendientes, ver
++-- opcional_cron_vencimientos.sql) y pasan a 'cancelado' con motivo 'vencido'.
++--
++-- Quién escribe: SOLO el servidor con service_role (rutas /api/tienda/...).
++--   RLS sin políticas de escritura; socio, encargado y barista pueden leer.
++--   Las funciones son SECURITY DEFINER y solo las ejecuta service_role.
++-- Seguridad: el token del ticket nunca se guarda, solo su sha-256 (hex).
++--   El precio y el total salen siempre de esta base, nunca de la landing.
++-- Arranca APAGADA: venta_habilitada = false y el café sin precio ni stock.
++-- Es la misma migración para Santa Fe 746 y para la 24. Se puede correr
++-- más de una vez sin romper nada.
++-- ---------------------------------------------------------------------------
++
++-- 1. Productos ---------------------------------------------------------------
++
++create table if not exists public.tienda_productos (
++  id             uuid          primary key default gen_random_uuid(),
++  slug           text          not null unique,
++  nombre         text          not null,
++  descripcion    text,
++  presentacion   text,                                   -- '250 g'
++  precio         numeric(12,2) not null default 0 check (precio >= 0),   -- pesos, IVA incluido
++  disponible     boolean       not null default false,
++  -- [{id, nombre, requerida, valores: [{id, nombre}]}]
++  opciones       jsonb         not null default '[]' check (jsonb_typeof(opciones) = 'array'),
++  max_por_pedido int           not null default 6 check (max_por_pedido between 1 and 20),
++  orden          int           not null default 0,
++  created_at     timestamptz   not null default now(),
++  updated_at     timestamptz   not null default now()
++);
++
++create index if not exists tienda_productos_orden on public.tienda_productos (orden, nombre);
++
++-- 2. Ventas ------------------------------------------------------------------
++
++create sequence if not exists public.tienda_ventas_numero_seq;
++
++create table if not exists public.tienda_ventas (
++  id                 uuid          primary key default gen_random_uuid(),
++  numero             bigint        not null unique default nextval('public.tienda_ventas_numero_seq'),
++  codigo             text          not null unique,      -- 'WEB-SF-0042'
++  token_hash         text          not null check (token_hash ~ '^[0-9a-f]{64}$'),
++  idempotency_key    uuid          not null,
++  estado             text          not null default 'pendiente_pago'
++                                   check (estado in ('pendiente_pago', 'pagado', 'retirado', 'cancelado')),
++  cliente_nombre     text          not null,
++  cliente_telefono   text          not null,             -- tal como lo escribió
++  cliente_email      text,
++  nota               text,
++  total              numeric(12,2) not null check (total >= 0),
++  origen             text          not null default 'landing',
++  vence_at           timestamptz   not null,
++  pagado_at          timestamptz,
++  pagado_por         uuid          references public.profiles(id) on delete set null,
++  retirado_at        timestamptz,
++  retirado_por       uuid          references public.profiles(id) on delete set null,
++  cancelado_at       timestamptz,
++  cancelado_por      uuid          references public.profiles(id) on delete set null,
++  motivo_cancelacion text,
++  created_at         timestamptz   not null default now(),
++  updated_at         timestamptz   not null default now(),
++  constraint tienda_ventas_idempotency_key_key unique (idempotency_key)
++);
++
++alter sequence public.tienda_ventas_numero_seq owned by public.tienda_ventas.numero;
++
++create index if not exists tienda_ventas_estado_fecha on public.tienda_ventas (estado, created_at desc);
++create index if not exists tienda_ventas_fecha on public.tienda_ventas (created_at desc);
++create index if not exists tienda_ventas_telefono on public.tienda_ventas (cliente_telefono);
++-- límite de pedidos sin pagar por teléfono (últimos 10 dígitos)
++create index if not exists tienda_ventas_tel_pendientes on public.tienda_ventas
++  (right(regexp_replace(cliente_telefono, '\D', '', 'g'), 10), created_at)
++  where estado = 'pendiente_pago';
++create index if not exists tienda_ventas_vencimiento on public.tienda_ventas (vence_at)
++  where estado = 'pendiente_pago';
++
++create table if not exists public.tienda_venta_items (
++  id              uuid          primary key default gen_random_uuid(),
++  venta_id        uuid          not null references public.tienda_ventas(id) on delete cascade,
++  producto_id     uuid          references public.tienda_productos(id) on delete set null,
++  nombre          text          not null,                -- copia del nombre al momento de la venta
++  detalle         text,                                  -- 'Molido para espresso'
++  opciones        jsonb         not null default '{}',   -- {"molienda": "espresso"}
++  cantidad        int           not null check (cantidad between 1 and 20),
++  precio_unitario numeric(12,2) not null,
++  subtotal        numeric(12,2) not null,
++  created_at      timestamptz   not null default now()
++);
++
++create index if not exists tienda_venta_items_venta on public.tienda_venta_items (venta_id);
++
++-- 3. updated_at (reusa la función genérica que ya existe en la base) ----------
++
++drop trigger if exists trg_tienda_productos_updated_at on public.tienda_productos;
++create trigger trg_tienda_productos_updated_at before update on public.tienda_productos
++  for each row execute function public.set_updated_at();
++
++drop trigger if exists trg_tienda_ventas_updated_at on public.tienda_ventas;
++create trigger trg_tienda_ventas_updated_at before update on public.tienda_ventas
++  for each row execute function public.set_updated_at();
++
++-- 4. RLS y permisos ------------------------------------------------------------
++-- Leen socio, encargado y barista (activos). Nadie escribe desde el cliente.
++
++alter table public.tienda_productos enable row level security;
++alter table public.tienda_ventas enable row level security;
++alter table public.tienda_venta_items enable row level security;
++
++drop policy if exists tienda_productos_select on public.tienda_productos;
++create policy tienda_productos_select on public.tienda_productos for select to authenticated
++  using (exists (select 1 from public.profiles p
++                 where p.id = auth.uid() and p.is_active and p.role in ('socio', 'encargado', 'barista')));
++
++drop policy if exists tienda_ventas_select on public.tienda_ventas;
++create policy tienda_ventas_select on public.tienda_ventas for select to authenticated
++  using (exists (select 1 from public.profiles p
++                 where p.id = auth.uid() and p.is_active and p.role in ('socio', 'encargado', 'barista')));
++
++drop policy if exists tienda_venta_items_select on public.tienda_venta_items;
++create policy tienda_venta_items_select on public.tienda_venta_items for select to authenticated
++  using (exists (select 1 from public.profiles p
++                 where p.id = auth.uid() and p.is_active and p.role in ('socio', 'encargado', 'barista')));
++
++-- Los permisos automáticos de Supabase dan ALL a anon y authenticated: se cierran.
++revoke all on table public.tienda_productos, public.tienda_ventas, public.tienda_venta_items from anon, authenticated;
++grant select on table public.tienda_productos, public.tienda_ventas, public.tienda_venta_items to authenticated;
++grant all on table public.tienda_productos, public.tienda_ventas, public.tienda_venta_items to service_role;
++revoke all on sequence public.tienda_ventas_numero_seq from anon, authenticated;
++grant usage, select on sequence public.tienda_ventas_numero_seq to service_role;
++
++-- 5. Configuración y producto inicial (apagados) -------------------------------
++
++insert into public.app_settings (key, value)
++values ('tienda', '{
++  "venta_habilitada": false,
++  "mensaje": null,
++  "pago": {"alias": null, "cbu": null, "titular": null, "banco": null, "cuit": null},
++  "whatsapp": null,
++  "retiro": {"direccion": null, "horario": null, "indicaciones": null},
++  "vencimiento_horas": 48
++}'::jsonb)
++on conflict (key) do nothing;
++
++insert into public.tienda_productos (slug, nombre, descripcion, presentacion, precio, disponible, max_por_pedido, opciones)
++values (
++  'cafe-1-4',
++  'Café de la casa · 1/4 kg',
++  'El mismo café que servimos en la barra. Bolsa de 250 g.',
++  '250 g',
++  0,
++  false,
++  6,
++  '[{"id": "molienda", "nombre": "Molienda", "requerida": true, "valores": [
++     {"id": "grano",    "nombre": "En grano"},
++     {"id": "espresso", "nombre": "Molido para espresso"},
++     {"id": "moka",     "nombre": "Molido para cafetera italiana"},
++     {"id": "filtro",   "nombre": "Molido para filtro (V60, Chemex, goteo)"},
++     {"id": "prensa",   "nombre": "Molido para prensa francesa"}
++   ]}]'::jsonb
++)
++on conflict (slug) do nothing;
++
++-- 6. Crear venta (todo en una transacción) --------------------------------------
++-- p_venta = {idempotency_key, items: [{producto_id, cantidad, opciones: {opcion_id: valor_id}}],
++--            cliente: {nombre, telefono, email|null}, nota|null, origen}
++-- p_prefijo = 'WEB-SF' / 'WEB-24' (^[A-Z0-9-]{2,12}$), p_token_hash = sha-256 hex del token.
++-- Devuelve {"ok": true, "repetida": bool, "venta_id": uuid, "codigo": text}
++--       o  {"ok": false, "codigo": <código del contrato>, "error": <texto para el cliente>, "campo": text|null}
++-- Los índices de campo ('items.0.cantidad') empiezan en 0, igual que zod.
++
++create or replace function public.tienda_crear_venta(p_venta jsonb, p_prefijo text, p_token_hash text)
++returns jsonb
++language plpgsql
++security definer
++set search_path = public
++as $$
++declare
++  v_uuid_re    constant text := '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$';
++  v_key        uuid;
++  v_venta_id   uuid;
++  v_codigo     text;
++  v_cfg        jsonb;
++  v_horas      numeric;
++  v_cliente    jsonb;
++  v_nombre     text;
++  v_telefono   text;
++  v_digitos    text;
++  v_tel10      text;
++  v_email      text;
++  v_nota       text;
++  v_origen     text;
++  v_items      jsonb;
++  v_item       jsonb;
++  v_i          int;
++  v_campo      text;
++  v_cant       int;
++  v_acum       int;
++  v_acumulado  jsonb := '{}';
++  v_prod       public.tienda_productos%rowtype;
++  v_hay_prod   boolean;
++  v_elegidas   jsonb;
++  v_clave      text;
++  v_opcion     jsonb;
++  v_valor_id   text;
++  v_valor      jsonb;
++  v_detalle    text[];
++  v_lineas     jsonb := '[]';
++  v_total      numeric(12,2) := 0;
++  v_pendientes int;
++  v_numero     bigint;
++  v_constraint text;
++begin
++  -- Errores de programación (los arma el servidor, no el cliente)
++  if p_prefijo is null or p_prefijo !~ '^[A-Z0-9-]{2,12}$' then
++    raise exception 'tienda_crear_venta: p_prefijo inválido: %', coalesce(p_prefijo, 'null') using errcode = '22023';
++  end if;
++  if p_token_hash is null or p_token_hash !~ '^[0-9a-f]{64}$' then
++    raise exception 'tienda_crear_venta: p_token_hash tiene que ser sha-256 en hex minúscula' using errcode = '22023';
++  end if;
++
++  if p_venta is null or jsonb_typeof(p_venta) <> 'object' then
++    return jsonb_build_object('ok', false, 'codigo', 'datos_invalidos',
++      'error', 'El pedido llegó vacío o mal armado.', 'campo', null);
++  end if;
++
++  -- 1. Repetición: misma idempotency_key → misma venta, con el token nuevo.
++  --    El candado serializa dos pedidos iguales que llegan a la vez.
++  if jsonb_typeof(p_venta->'idempotency_key') is distinct from 'string'
++     or (p_venta->>'idempotency_key') !~ v_uuid_re then
++    return jsonb_build_object('ok', false, 'codigo', 'datos_invalidos',
++      'error', 'Falta la clave del pedido.', 'campo', 'idempotency_key');
++  end if;
++  v_key := (p_venta->>'idempotency_key')::uuid;
++  perform pg_advisory_xact_lock(hashtextextended('tienda_web:idem:' || v_key::text, 0));
++
++  update public.tienda_ventas set token_hash = p_token_hash
++   where idempotency_key = v_key
++  returning id, codigo into v_venta_id, v_codigo;
++  if found then
++    return jsonb_build_object('ok', true, 'repetida', true, 'venta_id', v_venta_id, 'codigo', v_codigo);
++  end if;
++
++  -- 2. Interruptor de la sucursal
++  select value into v_cfg from public.app_settings where key = 'tienda';
++  if coalesce(v_cfg->'venta_habilitada', 'false'::jsonb) <> 'true'::jsonb then
++    return jsonb_build_object('ok', false, 'codigo', 'venta_deshabilitada',
++      'error', 'La venta web de esta sucursal está pausada.', 'campo', null);
++  end if;
++
++  -- 3. Datos básicos
++  v_cliente := p_venta->'cliente';
++  if jsonb_typeof(v_cliente) is distinct from 'object' then
++    return jsonb_build_object('ok', false, 'codigo', 'datos_invalidos',
++      'error', 'Faltan tu nombre y tu teléfono.', 'campo', 'cliente');
++  end if;
++
++  if jsonb_typeof(v_cliente->'nombre') = 'string' then
++    v_nombre := btrim(regexp_replace(v_cliente->>'nombre', '\s+', ' ', 'g'));
++  end if;
++  if v_nombre is null or char_length(v_nombre) < 2 or char_length(v_nombre) > 80 then
++    return jsonb_build_object('ok', false, 'codigo', 'datos_invalidos',
++      'error', 'Escribí tu nombre (entre 2 y 80 letras).', 'campo', 'cliente.nombre');
++  end if;
++
++  if jsonb_typeof(v_cliente->'telefono') = 'string' then
++    v_telefono := btrim(v_cliente->>'telefono');
++  end if;
++  v_digitos := regexp_replace(coalesce(v_telefono, ''), '\D', '', 'g');
++  if v_telefono is null or char_length(v_telefono) > 30
++     or char_length(v_digitos) < 8 or char_length(v_digitos) > 15 then
++    return jsonb_build_object('ok', false, 'codigo', 'datos_invalidos',
++      'error', 'Revisá el teléfono: tiene que tener al menos 8 números, con característica.', 'campo', 'cliente.telefono');
++  end if;
++  v_tel10 := right(v_digitos, 10);
++
++  if jsonb_typeof(v_cliente->'email') = 'string' then
++    v_email := nullif(btrim(v_cliente->>'email'), '');
++  elsif coalesce(jsonb_typeof(v_cliente->'email'), 'null') <> 'null' then
++    v_email := '-';  -- tipo raro: que falle la validación de abajo
++  end if;
++  if v_email is not null and (char_length(v_email) > 254 or v_email !~ '^[^@\s]+@[^@\s]+\.[^@\s]+$') then
++    return jsonb_build_object('ok', false, 'codigo', 'datos_invalidos',
++      'error', 'Revisá el email.', 'campo', 'cliente.email');
++  end if;
++
++  if jsonb_typeof(p_venta->'nota') = 'string' then
++    v_nota := nullif(btrim(p_venta->>'nota'), '');
++  elsif coalesce(jsonb_typeof(p_venta->'nota'), 'null') <> 'null' then
++    return jsonb_build_object('ok', false, 'codigo', 'datos_invalidos',
++      'error', 'La nota tiene que ser texto.', 'campo', 'nota');
++  end if;
++  if v_nota is not null and char_length(v_nota) > 300 then
++    return jsonb_build_object('ok', false, 'codigo', 'datos_invalidos',
++      'error', 'La nota puede tener hasta 300 caracteres.', 'campo', 'nota');
++  end if;
++
++  if jsonb_typeof(p_venta->'origen') = 'string' then
++    v_origen := btrim(p_venta->>'origen');
++  elsif coalesce(jsonb_typeof(p_venta->'origen'), 'null') = 'null' then
++    v_origen := 'landing';
++  end if;
++  if v_origen is null or char_length(v_origen) < 1 or char_length(v_origen) > 30 then
++    return jsonb_build_object('ok', false, 'codigo', 'datos_invalidos',
++      'error', 'Origen del pedido inválido.', 'campo', 'origen');
++  end if;
++
++  v_items := p_venta->'items';
++  if jsonb_typeof(v_items) is distinct from 'array'
++     or jsonb_array_length(v_items) < 1 or jsonb_array_length(v_items) > 10 then
++    return jsonb_build_object('ok', false, 'codigo', 'datos_invalidos',
++      'error', 'El pedido tiene que tener entre 1 y 10 productos.', 'campo', 'items');
++  end if;
++
++  for v_item, v_i in
++    select e, (n - 1)::int from jsonb_array_elements(v_items) with ordinality as t(e, n) order by n
++  loop
++    v_campo := 'items.' || v_i;
++    if jsonb_typeof(v_item) <> 'object' then
++      return jsonb_build_object('ok', false, 'codigo', 'datos_invalidos',
++        'error', 'Hay un producto mal cargado en el pedido.', 'campo', v_campo);
++    end if;
++    if jsonb_typeof(v_item->'cantidad') is distinct from 'number'
++       or (v_item->>'cantidad')::numeric <> trunc((v_item->>'cantidad')::numeric)
++       or (v_item->>'cantidad')::numeric < 1 or (v_item->>'cantidad')::numeric > 20 then
++      return jsonb_build_object('ok', false, 'codigo', 'datos_invalidos',
++        'error', 'La cantidad tiene que ser un número entero entre 1 y 20.', 'campo', v_campo || '.cantidad');
++    end if;
++  end loop;
++
++  -- 4. Productos, cantidades y opciones (precio siempre de esta base)
++  for v_item, v_i in
++    select e, (n - 1)::int from jsonb_array_elements(v_items) with ordinality as t(e, n) order by n
++  loop
++    v_campo := 'items.' || v_i;
++    v_cant := (v_item->>'cantidad')::int;
++
++    v_hay_prod := false;
++    if jsonb_typeof(v_item->'producto_id') = 'string' and (v_item->>'producto_id') ~ v_uuid_re then
++      select * into v_prod from public.tienda_productos where id = (v_item->>'producto_id')::uuid;
++      v_hay_prod := found;
++    end if;
++    if not v_hay_prod then
++      return jsonb_build_object('ok', false, 'codigo', 'producto_no_disponible',
++        'error', 'Ese producto ya no está en la tienda. Actualizá la página y volvé a elegir.',
++        'campo', v_campo || '.producto_id');
++    end if;
++    if not v_prod.disponible or v_prod.precio <= 0 then
++      return jsonb_build_object('ok', false, 'codigo', 'producto_no_disponible',
++        'error', format('%s no está disponible en este momento.', v_prod.nombre),
++        'campo', v_campo || '.producto_id');
++    end if;
++
++    -- el máximo es por pedido: suma todas las líneas del mismo producto
++    v_acum := coalesce((v_acumulado->>(v_prod.id::text))::int, 0) + v_cant;
++    if v_acum > v_prod.max_por_pedido then
++      return jsonb_build_object('ok', false, 'codigo', 'datos_invalidos',
++        'error', format('Podés llevar hasta %s de %s por pedido.', v_prod.max_por_pedido, v_prod.nombre),
++        'campo', v_campo || '.cantidad');
++    end if;
++    v_acumulado := v_acumulado || jsonb_build_object(v_prod.id::text, v_acum);
++
++    v_elegidas := coalesce(v_item->'opciones', '{}'::jsonb);
++    if jsonb_typeof(v_elegidas) = 'null' then
++      v_elegidas := '{}'::jsonb;
++    end if;
++    if jsonb_typeof(v_elegidas) <> 'object' then
++      return jsonb_build_object('ok', false, 'codigo', 'opcion_invalida',
++        'error', 'Las opciones del producto llegaron mal armadas.', 'campo', v_campo || '.opciones');
++    end if;
++
++    -- opciones que el producto no tiene, o valores que no son texto
++    for v_clave in select jsonb_object_keys(v_elegidas) loop
++      if jsonb_typeof(v_elegidas->v_clave) <> 'string'
++         or not exists (select 1 from jsonb_array_elements(v_prod.opciones) o where o->>'id' = v_clave) then
++        return jsonb_build_object('ok', false, 'codigo', 'opcion_invalida',
++          'error', format('Esa opción no corresponde a %s. Actualizá la página y volvé a elegir.', v_prod.nombre),
++          'campo', v_campo || '.opciones.' || v_clave);
++      end if;
++    end loop;
++
++    -- requeridas presentes y valores existentes; el detalle sigue el orden del producto
++    v_detalle := '{}';
++    for v_opcion in
++      select o from jsonb_array_elements(v_prod.opciones) with ordinality as t(o, n) order by n
++    loop
++      v_valor_id := v_elegidas->>(v_opcion->>'id');
++      if v_valor_id is null then
++        if coalesce(v_opcion->'requerida', 'false'::jsonb) = 'true'::jsonb then
++          return jsonb_build_object('ok', false, 'codigo', 'opcion_invalida',
++            'error', format('Elegí la opción "%s".', v_opcion->>'nombre'),
++            'campo', v_campo || '.opciones.' || (v_opcion->>'id'));
++        end if;
++        continue;
++      end if;
++      v_valor := null;
++      select v into v_valor
++        from jsonb_array_elements(coalesce(v_opcion->'valores', '[]'::jsonb)) as v
++       where v->>'id' = v_valor_id
++       limit 1;
++      if v_valor is null then
++        return jsonb_build_object('ok', false, 'codigo', 'opcion_invalida',
++          'error', format('La opción elegida en "%s" ya no existe. Volvé a elegirla.', v_opcion->>'nombre'),
++          'campo', v_campo || '.opciones.' || (v_opcion->>'id'));
++      end if;
++      v_detalle := v_detalle || (v_valor->>'nombre');
++    end loop;
++
++    v_lineas := v_lineas || jsonb_build_array(jsonb_build_object(
++      'producto_id',     v_prod.id,
++      'nombre',          v_prod.nombre,
++      'detalle',         nullif(array_to_string(v_detalle, ' · '), ''),
++      'opciones',        v_elegidas,
++      'cantidad',        v_cant,
++      'precio_unitario', v_prod.precio,
++      'subtotal',        v_prod.precio * v_cant
++    ));
++    v_total := v_total + v_prod.precio * v_cant;
++  end loop;
++
++  -- 5. Límite: hasta 3 pedidos sin pagar por teléfono en 24 h.
++  --    El candado por teléfono evita que dos pedidos simultáneos pasen el límite.
++  perform pg_advisory_xact_lock(hashtextextended('tienda_web:tel:' || v_tel10, 0));
++  select count(*) into v_pendientes
++    from public.tienda_ventas
++   where estado = 'pendiente_pago'
++     and created_at > now() - interval '24 hours'
++     and vence_at > now()
++     and right(regexp_replace(cliente_telefono, '\D', '', 'g'), 10) = v_tel10;
++  if v_pendientes >= 3 then
++    return jsonb_build_object('ok', false, 'codigo', 'demasiados_pedidos',
++      'error', 'Ya hay 3 pedidos sin pagar con este teléfono. Pagá alguno o escribinos por WhatsApp antes de hacer otro.',
++      'campo', 'cliente.telefono');
++  end if;
++
++  -- 6. Alta de la venta y sus líneas
++  if jsonb_typeof(v_cfg->'vencimiento_horas') = 'number' and (v_cfg->>'vencimiento_horas')::numeric > 0 then
++    v_horas := least((v_cfg->>'vencimiento_horas')::numeric, 720);
++  else
++    v_horas := 48;
++  end if;
++
++  v_numero := nextval('public.tienda_ventas_numero_seq');
++  v_codigo := p_prefijo || '-' || case when v_numero < 10000 then lpad(v_numero::text, 4, '0') else v_numero::text end;
++
++  begin
++    insert into public.tienda_ventas
++      (numero, codigo, token_hash, idempotency_key, cliente_nombre, cliente_telefono, cliente_email,
++       nota, total, origen, vence_at)
++    values
++      (v_numero, v_codigo, p_token_hash, v_key, v_nombre, v_telefono, v_email,
++       v_nota, v_total, v_origen, now() + v_horas * interval '1 hour')
++    returning id into v_venta_id;
++
++    insert into public.tienda_venta_items
++      (venta_id, producto_id, nombre, detalle, opciones, cantidad, precio_unitario, subtotal)
++    select v_venta_id, (l->>'producto_id')::uuid, l->>'nombre', l->>'detalle', l->'opciones',
++           (l->>'cantidad')::int, (l->>'precio_unitario')::numeric, (l->>'subtotal')::numeric
++      from jsonb_array_elements(v_lineas) with ordinality as t(l, n)
++     order by n;
++  exception when unique_violation then
++    -- red de seguridad: otra request con la misma clave ganó la carrera
++    get stacked diagnostics v_constraint = constraint_name;
++    if v_constraint is distinct from 'tienda_ventas_idempotency_key_key' then
++      raise;
++    end if;
++    update public.tienda_ventas set token_hash = p_token_hash
++     where idempotency_key = v_key
++    returning id, codigo into v_venta_id, v_codigo;
++    if not found then
++      raise;
++    end if;
++    return jsonb_build_object('ok', true, 'repetida', true, 'venta_id', v_venta_id, 'codigo', v_codigo);
++  end;
++
++  return jsonb_build_object('ok', true, 'repetida', false, 'venta_id', v_venta_id, 'codigo', v_codigo);
++end;
++$$;
++
++-- 7. Vencer pendientes ----------------------------------------------------------
++-- Pasa a 'cancelado' las pendientes cuyo vence_at ya pasó. Devuelve cuántas.
++
++create or replace function public.tienda_vencer_pendientes()
++returns integer
++language plpgsql
++security definer
++set search_path = public
++as $$
++declare
++  v_n integer;
++begin
++  update public.tienda_ventas
++     set estado = 'cancelado',
++         cancelado_at = vence_at,
++         motivo_cancelacion = 'vencido'
++   where estado = 'pendiente_pago'
++     and vence_at < now();
++  get diagnostics v_n = row_count;
++  return v_n;
++end;
++$$;
++
++revoke all on function public.tienda_crear_venta(jsonb, text, text) from public, anon, authenticated;
++grant execute on function public.tienda_crear_venta(jsonb, text, text) to service_role;
++revoke all on function public.tienda_vencer_pendientes() from public, anon, authenticated;
++grant execute on function public.tienda_vencer_pendientes() to service_role;
++
++comment on table public.tienda_productos is 'Tienda web: productos que se venden desde la landing. Escribe solo el servidor.';
++comment on table public.tienda_ventas is 'Tienda web: pedidos de la landing. Se crean con tienda_crear_venta(). Escribe solo el servidor.';
++comment on table public.tienda_venta_items is 'Tienda web: líneas de cada pedido, con precio copiado al momento de la venta.';
++comment on function public.tienda_crear_venta(jsonb, text, text) is 'Tienda web: valida y crea una venta pendiente_pago de forma atómica e idempotente. Solo service_role.';
++comment on function public.tienda_vencer_pendientes() is 'Tienda web: cancela (motivo vencido) las ventas pendientes vencidas. Devuelve cuántas.';
++
++-- 8. Que la API vea las tablas nuevas.
++notify pgrst, 'reload schema';
+-- 
+2.52.0.windows.1
+

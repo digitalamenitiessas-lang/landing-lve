@@ -1,0 +1,43 @@
+/*
+ * Estado inicial del hero, coherente con el SSR.
+ *
+ * Los elementos marcados con [data-entra] los anima la timeline de entrada.
+ * Para que no "salten" (se vean dibujados y después desaparezcan al hidratar),
+ * arrancan ocultos SOLO si hay JavaScript y el usuario acepta movimiento.
+ * Sin JS o con prefers-reduced-motion se ven completos desde el primer paint.
+ *
+ * Red de seguridad: si por lo que sea GSAP no llega a correr, a los 3 s una
+ * animación CSS los vuelve visibles igual.
+ */
+
+@media (scripting: enabled) and (prefers-reduced-motion: no-preference) {
+  .hero [data-entra] {
+    visibility: hidden;
+    animation: seguro 0s linear 3s forwards;
+  }
+}
+
+@keyframes seguro {
+  to {
+    visibility: visible;
+  }
+}
+
+/* Flechita de "bajá": rebote suave. Con reduced-motion el reset global de
+   globals.css la deja quieta en su lugar. */
+.rebote {
+  animation: rebote 2.2s var(--ease-tiza) infinite;
+}
+
+@keyframes rebote {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  45% {
+    transform: translateY(7px);
+  }
+  70% {
+    transform: translateY(2px);
+  }
+}
