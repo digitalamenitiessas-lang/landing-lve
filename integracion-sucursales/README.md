@@ -78,7 +78,9 @@ npx tsc --noEmit -p . 2>&1 | grep -E "tienda" || echo "sin errores en los archiv
 npm run build
 ```
 
-`next.config.ts` tiene `ignoreBuildErrors`, y el repo ya traía errores de tipos de antes (113 en la 24 y 123 en LVE). El parche no suma ninguno.
+`next.config.ts` tiene `ignoreBuildErrors`, y el repo ya traía errores de tipos de antes (113 en la 24 y 124 en LVE). El parche no suma ninguno.
+
+En LVE la cuenta puede dar 123 o 124, con o sin el parche. La primera corrida en un clon limpio da 123. Las siguientes reusan `tsconfig.tsbuildinfo` (el `tsconfig` tiene `incremental`) y dan 124. El de más es un `TS2589` ("Type instantiation is excessively deep") en `src/app/api/chatbot/route.ts`, un archivo que el parche no toca.
 
 ### 2. Aplicar la migración en Supabase
 
@@ -117,12 +119,12 @@ Mergeá `feat/tienda-web` a `main`, o hacé push y deploy como siempre. **Las va
 
 ### 5. Cargar la tienda y abrirla
 
-En Sala de Profes, con usuario **socio o encargado**: menú **Más → Operación → Tienda web** (`/tienda`) → **Ajustes**.
+En Sala de Profes, con usuario **socio o encargado**: menú **Más → Operación → Tienda web** (`/tienda`) → **Ajustes**. La primera vez entrá con un **socio**: los datos de cobro (el paso 2 y el WhatsApp del paso 3) solo los carga un socio.
 
 1. **Productos**: el precio del 1/4 kg, la marca "Hay stock" y el máximo por pedido (6 por defecto).
-2. **Dónde transfieren**: alias y/o CBU (22 números), titular, banco y CUIT.
+2. **Dónde transfieren** (solo socio): alias y/o CBU (22 números), titular, banco y CUIT.
 3. **Comprobantes y retiro**:
-   - WhatsApp donde llegan los comprobantes, con 549 adelante y sin el 15 (`5493815551234`),
+   - WhatsApp donde llegan los comprobantes (solo socio), con 549 adelante y sin el 15 (`5493815551234`),
    - dirección,
    - horario,
    - indicaciones,
@@ -131,6 +133,11 @@ En Sala de Profes, con usuario **socio o encargado**: menú **Más → Operació
 5. **Guardar ajustes**.
 
 El panel también avisa si falta `TIENDA_API_SECRET` y muestra cómo van a salir los códigos (`WEB-24-0001`).
+
+**Qué puede cambiar cada uno:**
+
+- **Socio:** todo.
+- **Encargado:** activar o pausar la venta, precios, stock y máximo por pedido, retiro, aviso y horas de reserva. Los datos de cobro (alias, CBU, titular, banco, CUIT y WhatsApp) los ve de solo lectura, con la leyenda "Los datos de cobro los cambia un socio".
 
 ### 6. Conectar la landing
 
@@ -214,7 +221,7 @@ La pantalla es **Más → Tienda web** (`/tienda`). Se actualiza sola cada 30 se
 **Otros detalles:**
 
 - **Push:** cada venta nueva manda **"Nueva venta web"** a socios y encargados. Se configura en Configuración → Notificaciones, como cualquier otro evento.
-- **Auditoría:** cada cobro, entrega, cancelación y cambio de ajustes queda registrado en **Auditoría**, módulo "Tienda web".
+- **Auditoría:** cada cobro, entrega, cancelación y cambio de ajustes queda registrado en **Auditoría**, módulo "Tienda web". Los cambios de datos de cobro quedan en una entrada aparte ("Cambió los datos de cobro de la tienda web: alias … → …, CBU ****1234 → ****5678"), con quién los hizo y, en la metadata, el alias y el CBU viejos y nuevos. Del CBU se guardan solo los últimos 4 dígitos.
 - **Vencimiento:** cuando vence el plazo, el pedido pasa solo a **Cancelados** ("venció sin pago"), aunque el cliente haya transferido y nadie haya visto el comprobante todavía. Si llega el comprobante **por el monto exacto**, buscá la venta en **Cancelados** y tocá **Marcar pagado (llegó el comprobante)**: vuelve a **Para entregar** con el mismo código, el mismo precio y el mismo total, y queda en Auditoría que había vencido. Esto se puede solo con las vencidas: una venta que canceló el equipo no se revive. Si preferís no tomar una transferencia muy tardía, devolvela y pedile que haga el pedido de nuevo.
 
 ---
@@ -233,10 +240,12 @@ La pantalla es **Más → Tienda web** (`/tienda`). Se actualiza sola cada 30 se
   - Las funciones las ejecuta solo `service_role`.
 - **Permisos en la app.**
   - Las rutas del equipo (`/api/tienda/config`, `/api/tienda/ventas` y `/api/tienda/ventas/[id]`) exigen sesión, rol **y** perfil activo (`profiles.is_active`). Alguien dado de baja en `/equipo` recibe `403` aunque vuelva a iniciar sesión.
-  - Dar de baja en `/equipo` no bloquea la cuenta de Auth: la contraseña sigue sirviendo para el resto de la app. Al dar de baja a alguien, bloqueale también la cuenta (o cambiale la contraseña) en Supabase → Authentication, y si era encargado revisá el alias y el CBU en **Ajustes**.
+  - Dar de baja en `/equipo` no bloquea la cuenta de Auth: la contraseña sigue sirviendo para el resto de la app. Al dar de baja a alguien, bloqueale también la cuenta (o cambiale la contraseña) en Supabase → Authentication, y si era socio revisá en **Auditoría** si cambió los datos de cobro.
   - Cobrar y cancelar: socio y encargado. También cobrar una vencida (Cancelados → **Marcar pagado**).
   - Entregar: también barista.
   - Ajustes: socio y encargado.
+  - **Datos de cobro** (alias, CBU, titular, banco, CUIT y WhatsApp): **solo un socio activo**. Son a quién le transfiere el cliente y adónde manda el comprobante: si un encargado los pudiera cambiar, podría poner su propia cuenta y quedarse con las transferencias. Lo controla el servidor (`PATCH /api/tienda/config`): si alguien que no es socio manda uno de esos datos distinto del guardado, responde `403` "Solo un socio puede cambiar los datos de cobro" y no guarda nada (ni lo demás que venía en el mismo pedido). Reenviar los mismos valores no cuenta como cambio. Desde el navegador, la policy `app_settings_write` ya deja escribir `app_settings` solo a un socio; pero las rutas usan `service_role`, que se saltea la RLS, por eso el control va en la ruta.
+  - Cada cambio de datos de cobro queda en **Auditoría** (acción `tienda_datos_cobro`), con el alias y el CBU viejos y nuevos y el CBU enmascarado a sus últimos 4 dígitos. El CBU completo no se guarda en la auditoría, tampoco en la entrada general de ajustes (`tienda_config`).
   - Cada cambio de estado se aplica solo si la venta sigue en el estado que se vio. Si dos personas tocan a la vez, la segunda recibe "Alguien más cambió la venta" y no se pisa nada.
 - **Límites.**
   - Hasta 10 líneas por pedido.
@@ -266,7 +275,7 @@ supabase/migrations/20261004_tienda_web.sql      (copia de sql/20261004_tienda_w
 src/lib/tienda/tipos.ts          tipos del contrato v1 + filas de las tablas + API del staff
 src/lib/tienda/auth.ts           verificarSecreto / verificarVersion / protegerRutaPublica / requireRolActivo (staff)
 src/lib/tienda/validar.ts        validarCrearVenta (equivalente a CrearVentaBodySchema, sin zod)
-src/lib/tienda/config.ts         app_settings 'tienda', prefijo, productos, validación de ajustes
+src/lib/tienda/config.ts         app_settings 'tienda', prefijo, productos, validación de ajustes, datos de cobro (solo socio)
 src/lib/tienda/ventas.ts         token + hash, carga de ventas, mapeo a VentaPublica / VentaStaff
 src/lib/tienda/db.ts             cliente service_role sin tipar para las tablas tienda_*
 src/lib/tienda/respuestas.ts     respuestas y errores con la forma del contrato
@@ -275,7 +284,7 @@ src/app/api/tienda/publico/ventas/route.ts              POST (landing)
 src/app/api/tienda/publico/ventas/[codigo]/route.ts     GET  (landing, X-Venta-Token)
 src/app/api/tienda/ventas/route.ts                      GET  (staff)
 src/app/api/tienda/ventas/[id]/route.ts                 PATCH (staff)
-src/app/api/tienda/config/route.ts                      GET/PATCH (socio/encargado)
+src/app/api/tienda/config/route.ts                      GET/PATCH (socio/encargado; datos de cobro, solo socio)
 src/app/(app)/tienda/page.tsx
 src/app/(app)/tienda/_components/VentaCard.tsx
 src/app/(app)/tienda/_components/AjustesTienda.tsx
@@ -305,7 +314,9 @@ Todo se hizo en clones descartables. Los repos originales no se tocaron.
 | Repo | Errores sin el parche | Errores con el parche |
 |---|---|---|
 | 24 | 113 | 113 |
-| LVE | 123 | 123 |
+| LVE | 124 | 124 |
+
+En LVE, con `--incremental false` (o en la primera corrida) da 123 en los dos casos. Ver el paso 1.
 
 **Lint:** `npx eslint` sobre los archivos nuevos y tocados no da errores nuevos. El único que aparece es uno que `TopBar.tsx` ya tenía antes (`setMounted` en un effect).
 
@@ -323,5 +334,8 @@ Todo se hizo en clones descartables. Los repos originales no se tocaron.
 6. **Push.** Las ventas nuevas consultan a quién mandarle el push después de responder.
 7. **Cambios de estado.** Se probaron transiciones válidas e inválidas (`409`) y permisos por rol (`403` para el barista que quiere cobrar o para el chef). Seis "pagado" simultáneos dan **un** `200` y cinco `409`. Una venta vencida pasa a "cancelado" al consultarla.
 8. **Ajustes.** Validan alias, CBU, WhatsApp, horas y "disponible sin precio".
+   - **Datos de cobro, solo socio** (en la 24, con `next start` y un Supabase de prueba en memoria). Un encargado que cambia el alias, el CBU, el titular, el banco, el CUIT o el WhatsApp (o los borra) recibe `403` "Solo un socio puede cambiar los datos de cobro" con el `campo`, y no se guarda nada ni se audita nada. Reenviando los mismos valores (el WhatsApp escrito con espacios y guiones), `200`. El encargado sí activa y pausa la venta y cambia precio, stock, máximo, retiro, aviso y horas. Un socio inactivo recibe `403` "Cuenta desactivada", y un barista `403` "Sin permisos".
+   - **Auditoría.** El cambio de un socio deja una entrada `tienda_datos_cobro` con su nombre, el alias viejo y el nuevo, y el CBU como `****8901 → ****5201`. Si en el mismo guardado cambió otra cosa, va además la entrada `tienda_config`. Un guardado sin cambios no audita nada. El CBU completo no aparece en ninguna entrada.
+   - **Pantalla.** Como encargado, los seis campos se ven grises y de solo lectura con la leyenda, y el guardado no los manda. Si intenta activar la venta sin alias/CBU, el error suma "Los datos de cobro los cambia un socio". Como socio, se editan como siempre.
 9. **Sin Supabase o sin migración.** Las rutas públicas dan `500` controlado y `/tienda` avisa que falta la migración.
 10. **Pantalla.** `/tienda` se revisó a 375 px: sin scroll horizontal, con el ámbar de "vence en < 6 h" y la confirmación en dos pasos.

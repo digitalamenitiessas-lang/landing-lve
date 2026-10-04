@@ -65,6 +65,7 @@ Ver [`.env.example`](.env.example).
 
 1. Importar el repo en Vercel y cargar las variables (sin `TIENDA_MOCK`).
 2. En cada sucursal, aplicar el kit de `integracion-sucursales/` y cargar el mismo secreto de ambos lados.
-3. Cargar precio, alias, CBU y WhatsApp desde `/tienda → Ajustes` en el sistema de cada sucursal y
-   activar la venta web. Hasta entonces la landing muestra "Todavía no estamos vendiendo café en esta
-   sucursal".
+3. Cargar precio, alias, CBU y WhatsApp desde `/tienda → Ajustes` en el sistema de cada sucursal
+   (los datos de cobro solo los puede cambiar un **socio**) y activar la venta web. Hasta entonces la
+   landing muestra el café sin precio con "La venta web está pausada en esta sucursal" (o "Agotado en
+   esta sucursal" si está activa pero sin stock) y no deja comprar.

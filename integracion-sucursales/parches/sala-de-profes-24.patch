@@ -1,4 +1,4 @@
-From 093adf3c19c8f6461001f9360811cea11dacd2b5 Mon Sep 17 00:00:00 2001
+From 6c81019f1a05451fad47073d0b8d62c9ee6a2b42 Mon Sep 17 00:00:00 2001
 From: luciano bonilla <lucianobonilla27@gmail.com>
 Date: Sun, 4 Oct 2026 12:41:52 -0300
 Subject: [PATCH] =?UTF-8?q?feat(tienda):=20venta=20de=20caf=C3=A9=20desde?=
@@ -26,6 +26,10 @@ sistema de la sucursal donde se compró. Esto agrega:
 
 Seguridad y operación:
 - Las rutas del equipo exigen perfil activo (requireRolActivo).
+- Los datos de cobro (alias, CBU, titular, banco, CUIT y WhatsApp) los
+  cambia solo un socio activo: si otro rol los manda cambiados,
+  PATCH /api/tienda/config responde 403. Cada cambio queda en la
+  auditoría (tienda_datos_cobro) con el CBU enmascarado (****1234).
 - Una venta vencida se puede pasar a pagado si el comprobante llegó tarde
   (Cancelados → "Marcar pagado (llegó el comprobante)").
 - La repetición con la misma idempotency_key exige el mismo teléfono, y el
@@ -38,12 +42,12 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ---
  .env.example                                  |   8 +
  src/app/(app)/auditoria/page.tsx              |   3 +-
- .../tienda/_components/AjustesTienda.tsx      | 387 +++++++++++++
+ .../tienda/_components/AjustesTienda.tsx      | 420 ++++++++++++++
  .../(app)/tienda/_components/VentaCard.tsx    | 290 +++++++++
  src/app/(app)/tienda/_components/formato.ts   |  74 +++
  src/app/(app)/tienda/_components/use-ahora.ts |  16 +
- src/app/(app)/tienda/page.tsx                 | 220 +++++++
- src/app/api/tienda/config/route.ts            | 123 ++++
+ src/app/(app)/tienda/page.tsx                 | 221 +++++++
+ src/app/api/tienda/config/route.ts            | 161 +++++
  src/app/api/tienda/publico/catalogo/route.ts  |  43 ++
  .../tienda/publico/ventas/[codigo]/route.ts   |  58 ++
  src/app/api/tienda/publico/ventas/route.ts    |  81 +++
@@ -54,14 +58,14 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
  src/lib/audit.ts                              |   2 +-
  src/lib/push/notify-event.ts                  |   7 +
  src/lib/tienda/auth.ts                        | 108 ++++
- src/lib/tienda/config.ts                      | 429 ++++++++++++++
+ src/lib/tienda/config.ts                      | 515 ++++++++++++++++
  src/lib/tienda/db.ts                          |  30 +
  src/lib/tienda/respuestas.ts                  |  52 ++
- src/lib/tienda/tipos.ts                       | 342 +++++++++++
+ src/lib/tienda/tipos.ts                       | 344 +++++++++++
  src/lib/tienda/validar.ts                     | 160 +++++
  src/lib/tienda/ventas.ts                      | 213 +++++++
  supabase/migrations/20261004_tienda_web.sql   | 548 ++++++++++++++++++
- 25 files changed, 3433 insertions(+), 2 deletions(-)
+ 25 files changed, 3593 insertions(+), 2 deletions(-)
  create mode 100644 src/app/(app)/tienda/_components/AjustesTienda.tsx
  create mode 100644 src/app/(app)/tienda/_components/VentaCard.tsx
  create mode 100644 src/app/(app)/tienda/_components/formato.ts
@@ -121,15 +125,15 @@ index a89cb8c..7d5e3df 100644
  const ACTION_ICONS: Record<string, typeof Shield> = {
 diff --git a/src/app/(app)/tienda/_components/AjustesTienda.tsx b/src/app/(app)/tienda/_components/AjustesTienda.tsx
 new file mode 100644
-index 0000000..85cff00
+index 0000000..3209d47
 --- /dev/null
 +++ b/src/app/(app)/tienda/_components/AjustesTienda.tsx
-@@ -0,0 +1,387 @@
+@@ -0,0 +1,420 @@
 +'use client'
 +
 +import { useId, useState, type ReactNode } from 'react'
 +import useSWR from 'swr'
-+import { AlertTriangle, Check, KeyRound, Loader2, Save } from 'lucide-react'
++import { AlertTriangle, Check, KeyRound, Loader2, Lock, Save } from 'lucide-react'
 +import { apiFetcher } from '@/lib/swr/fetchers'
 +import { errorToast, successToast } from '@/lib/toast-helpers'
 +import { cn } from '@/lib/utils'
@@ -140,10 +144,17 @@ index 0000000..85cff00
 +// Ajustes de la tienda web (solo socio y encargado):
 +// interruptor de venta, datos de pago, WhatsApp, retiro, reserva, mensaje y,
 +// por producto, precio / disponible / máximo por pedido.
++// Los datos de cobro (alias, CBU, titular, banco, CUIT y WhatsApp) los cambia
++// solo un socio: para el encargado van de solo lectura y no se mandan. El
++// servidor igual lo controla (403).
 +// ---------------------------------------------------------------------------
 +
 +const INPUT =
 +  'h-11 w-full rounded-xl border border-[#ebe6df] bg-white px-3 text-sm text-[#3d2c24] placeholder:text-[#a39e97] focus:border-[#006d5a] focus:outline-none focus:ring-1 focus:ring-[#006d5a]'
++
++const SOLO_LECTURA = 'bg-[#faf8f5] text-[#7d6c64] focus:border-[#ebe6df] focus:ring-0'
++
++const LEYENDA_SOLO_SOCIO = 'Los datos de cobro los cambia un socio.'
 +
 +/** "9.500" / "9500" / "9500,50" / "$ 9.500" → 9500 | 9500.5. null si no se entiende. */
 +function parsePesos(v: string): number | null {
@@ -205,6 +216,12 @@ index 0000000..85cff00
 +
 +function Formulario({ datos, onGuardado }: { datos: RespuestaConfigStaff; onGuardado: (d: RespuestaConfigStaff) => void }) {
 +  const c = datos.config
++  const puedeCobro = datos.puede_editar_cobro
++  /** Props de los inputs de datos de cobro: de solo lectura si no es socio. */
++  const cobro = (placeholder?: string, clase?: string) =>
++    puedeCobro
++      ? { placeholder, className: cn(INPUT, clase) }
++      : { readOnly: true, placeholder: 'Sin cargar', className: cn(INPUT, clase, SOLO_LECTURA) }
 +  const [ventaHabilitada, setVentaHabilitada] = useState(c.venta_habilitada)
 +  const [mensaje, setMensaje] = useState(c.mensaje ?? '')
 +  const [alias, setAlias] = useState(c.pago.alias ?? '')
@@ -250,14 +267,19 @@ index 0000000..85cff00
 +      config: {
 +        venta_habilitada: ventaHabilitada,
 +        mensaje: mensaje.trim() || null,
-+        pago: {
-+          alias: alias.trim() || null,
-+          cbu: cbu.trim() || null,
-+          titular: titular.trim() || null,
-+          banco: banco.trim() || null,
-+          cuit: cuit.trim() || null,
-+        },
-+        whatsapp: whatsapp.trim() || null,
++        // Los datos de cobro los manda solo un socio: si no, el servidor responde 403.
++        ...(puedeCobro
++          ? {
++              pago: {
++                alias: alias.trim() || null,
++                cbu: cbu.trim() || null,
++                titular: titular.trim() || null,
++                banco: banco.trim() || null,
++                cuit: cuit.trim() || null,
++              },
++              whatsapp: whatsapp.trim() || null,
++            }
++          : {}),
 +        retiro: {
 +          direccion: direccion.trim() || null,
 +          horario: horario.trim() || null,
@@ -277,7 +299,13 @@ index 0000000..85cff00
 +      })
 +      const json = await res.json().catch(() => ({}))
 +      if (!res.ok) {
-+        setError(json.error ?? 'No se pudieron guardar los ajustes.')
++        const mensajeError: string = json.error ?? 'No se pudieron guardar los ajustes.'
++        // Ej.: activar la venta sin alias/CBU o sin WhatsApp. El encargado no los puede cargar.
++        const faltaCobro =
++          res.status === 400 &&
++          typeof json.campo === 'string' &&
++          (json.campo.startsWith('config.pago') || json.campo === 'config.whatsapp')
++        setError(!puedeCobro && faltaCobro ? `${mensajeError} ${LEYENDA_SOLO_SOCIO}` : mensajeError)
 +        return
 +      }
 +      const nuevos = json as RespuestaConfigStaff
@@ -324,7 +352,7 @@ index 0000000..85cff00
 +          activo={ventaHabilitada}
 +          onChange={setVentaHabilitada}
 +          label={ventaHabilitada ? 'Venta activa' : 'Venta pausada'}
-+          descripcion="Si la pausás, la web muestra el café pero no deja comprar."
++          descripcion='Pausada, la web muestra el café sin precio y sin dejar comprar, con el aviso "La venta web está pausada en esta sucursal".'
 +        />
 +        <div className="mt-3">
 +          <Campo label="Aviso arriba del formulario" ayuda='Opcional. Ej.: "Esta semana solo en grano".'>
@@ -345,7 +373,10 @@ index 0000000..85cff00
 +      <section aria-labelledby="ajustes-productos" className="rounded-2xl bg-white p-4 ring-1 ring-[#ebe6df]">
 +        <h3 id="ajustes-productos" className="section-label mb-2">Productos</h3>
 +        {productos.length === 0 && (
-+          <p className="text-xs text-[#a39e97]">No hay productos cargados. Revisá que se haya aplicado la migración.</p>
++          <p className="text-xs text-[#a39e97]">
++            No hay productos cargados: con la venta activa, la web muestra &quot;Todavía no estamos vendiendo café en
++            esta sucursal&quot;. Revisá que se haya aplicado la migración.
++          </p>
 +        )}
 +        <div className="space-y-4">
 +          {productos.map((p) => {
@@ -357,7 +388,7 @@ index 0000000..85cff00
 +                  {p.presentacion && <span className="font-normal text-[#a39e97]"> · {p.presentacion}</span>}
 +                </p>
 +                <div className="grid grid-cols-2 gap-2">
-+                  <Campo label="Precio" ayuda={precio && precio > 0 ? fmtPesos(precio) : 'Sin precio no se vende'}>
++                  <Campo label="Precio" ayuda={precio && precio > 0 ? fmtPesos(precio) : 'Sin precio, en la web sale agotado'}>
 +                    {(id) => (
 +                      <input
 +                        id={id}
@@ -388,7 +419,7 @@ index 0000000..85cff00
 +                  activo={p.disponible}
 +                  onChange={(v) => cambiarProducto(p.id, { disponible: v })}
 +                  label={p.disponible ? 'Hay stock' : 'Sin stock'}
-+                  descripcion="Apagalo cuando se termine: en la web aparece como agotado."
++                  descripcion='Apagalo cuando se termine. La web muestra el café sin precio y sin dejar comprar, con el aviso "Agotado en esta sucursal".'
 +                />
 +              </div>
 +            )
@@ -398,26 +429,32 @@ index 0000000..85cff00
 +
 +      <section aria-labelledby="ajustes-pago" className="rounded-2xl bg-white p-4 ring-1 ring-[#ebe6df]">
 +        <h3 id="ajustes-pago" className="section-label mb-2">Dónde transfieren</h3>
++        {!puedeCobro && (
++          <p className="mb-3 flex items-center gap-1.5 rounded-xl bg-[#faf8f5] px-3 py-2 text-[11px] font-semibold text-[#7d6c64]">
++            <Lock className="size-3.5 shrink-0" aria-hidden />
++            {LEYENDA_SOLO_SOCIO}
++          </p>
++        )}
 +        <div className="space-y-3">
 +          <Campo label="Alias" ayuda="Lo que el cliente copia en la app del banco.">
 +            {(id) => (
-+              <input id={id} value={alias} onChange={(e) => setAlias(e.target.value)} autoCapitalize="none" autoCorrect="off" spellCheck={false} placeholder="la.vieja.escuela" className={INPUT} />
++              <input id={id} value={alias} onChange={(e) => setAlias(e.target.value)} autoCapitalize="none" autoCorrect="off" spellCheck={false} {...cobro('la.vieja.escuela')} />
 +            )}
 +          </Campo>
 +          <Campo label="CBU / CVU" ayuda="22 números. Opcional si hay alias.">
 +            {(id) => (
-+              <input id={id} value={cbu} onChange={(e) => setCbu(e.target.value)} inputMode="numeric" className={cn(INPUT, 'font-mono')} />
++              <input id={id} value={cbu} onChange={(e) => setCbu(e.target.value)} inputMode="numeric" {...cobro(undefined, 'font-mono')} />
 +            )}
 +          </Campo>
 +          <Campo label="Titular">
-+            {(id) => <input id={id} value={titular} onChange={(e) => setTitular(e.target.value)} className={INPUT} />}
++            {(id) => <input id={id} value={titular} onChange={(e) => setTitular(e.target.value)} {...cobro()} />}
 +          </Campo>
 +          <div className="grid grid-cols-2 gap-2">
 +            <Campo label="Banco">
-+              {(id) => <input id={id} value={banco} onChange={(e) => setBanco(e.target.value)} className={INPUT} />}
++              {(id) => <input id={id} value={banco} onChange={(e) => setBanco(e.target.value)} {...cobro()} />}
 +            </Campo>
 +            <Campo label="CUIT">
-+              {(id) => <input id={id} value={cuit} onChange={(e) => setCuit(e.target.value)} inputMode="numeric" className={INPUT} />}
++              {(id) => <input id={id} value={cuit} onChange={(e) => setCuit(e.target.value)} inputMode="numeric" {...cobro()} />}
 +            </Campo>
 +          </div>
 +        </div>
@@ -426,9 +463,9 @@ index 0000000..85cff00
 +      <section aria-labelledby="ajustes-whatsapp" className="rounded-2xl bg-white p-4 ring-1 ring-[#ebe6df]">
 +        <h3 id="ajustes-whatsapp" className="section-label mb-2">Comprobantes y retiro</h3>
 +        <div className="space-y-3">
-+          <Campo label="WhatsApp para comprobantes" ayuda="Con 549 adelante y sin el 15: 5493815551234.">
++          <Campo label="WhatsApp para comprobantes" ayuda={puedeCobro ? 'Con 549 adelante y sin el 15: 5493815551234.' : LEYENDA_SOLO_SOCIO}>
 +            {(id) => (
-+              <input id={id} value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} inputMode="numeric" placeholder="5493815551234" className={cn(INPUT, 'font-mono')} />
++              <input id={id} value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} inputMode="numeric" {...cobro('5493815551234', 'font-mono')} />
 +            )}
 +          </Campo>
 +          <Campo label="Dirección de retiro">
@@ -912,10 +949,10 @@ index 0000000..a89f0b4
 +}
 diff --git a/src/app/(app)/tienda/page.tsx b/src/app/(app)/tienda/page.tsx
 new file mode 100644
-index 0000000..fa4d9de
+index 0000000..ac39e9a
 --- /dev/null
 +++ b/src/app/(app)/tienda/page.tsx
-@@ -0,0 +1,220 @@
+@@ -0,0 +1,221 @@
 +'use client'
 +
 +// ---------------------------------------------------------------------------
@@ -925,7 +962,8 @@ index 0000000..fa4d9de
 +// el comprobante por WhatsApp un encargado/socio la marca pagada → cuando el
 +// cliente la retira, cualquiera del equipo (barista incluido) la marca
 +// entregada. El ticket del cliente en la web se actualiza solo.
-+// Socio, encargado y barista. Ajustes: solo socio y encargado.
++// Socio, encargado y barista. Ajustes: solo socio y encargado; los datos de
++// cobro (alias, CBU, titular, banco, CUIT y WhatsApp), solo socio.
 +// ---------------------------------------------------------------------------
 +
 +import { useState } from 'react'
@@ -1138,18 +1176,24 @@ index 0000000..fa4d9de
 +}
 diff --git a/src/app/api/tienda/config/route.ts b/src/app/api/tienda/config/route.ts
 new file mode 100644
-index 0000000..4ebe7dd
+index 0000000..c71c91f
 --- /dev/null
 +++ b/src/app/api/tienda/config/route.ts
-@@ -0,0 +1,123 @@
+@@ -0,0 +1,161 @@
 +import { NextResponse } from 'next/server'
 +import { logAudit } from '@/lib/audit'
++import { isSocio } from '@/lib/roles'
 +import { requireRolActivo, tiendaSecretoConfigurado } from '@/lib/tienda/auth'
 +import {
 +  aplicarPatchConfig,
 +  aProductoStaff,
++  auditoriaCambioCobro,
++  cambiaAlgoMasQueCobro,
++  camposCobroCambiados,
++  configParaAuditoria,
 +  leerConfig,
 +  leerProductos,
++  MENSAJE_SOLO_SOCIO_COBRO,
 +  prefijoCodigo,
 +  SETTINGS_KEY,
 +  validarPatchProductos,
@@ -1162,22 +1206,24 @@ index 0000000..4ebe7dd
 +// GET   /api/tienda/config — ajustes de la tienda web + productos
 +// PATCH /api/tienda/config — body { config?: {...parcial}, productos?: [{ id, ...cambios }] }
 +// ---------------------------------------------------------------------------
-+// Solo socio y encargado. La config vive en app_settings (key 'tienda'); los
-+// productos en tienda_productos. Nunca devuelve el valor de TIENDA_API_SECRET:
-+// solo si está configurado.
++// Solo socio y encargado. Los datos de cobro (pago.* y whatsapp) los cambia
++// solo un socio: si un encargado los manda distintos, 403. La config vive en
++// app_settings (key 'tienda'); los productos en tienda_productos. Nunca
++// devuelve el valor de TIENDA_API_SECRET: solo si está configurado.
 +// ---------------------------------------------------------------------------
 +
 +export const dynamic = 'force-dynamic'
 +
 +const ROLES = ['socio', 'encargado'] as const
 +
-+async function armarRespuesta(admin: TiendaDb): Promise<RespuestaConfigStaff> {
++async function armarRespuesta(admin: TiendaDb, role: string): Promise<RespuestaConfigStaff> {
 +  const [config, productos] = await Promise.all([leerConfig(admin), leerProductos(admin)])
 +  return {
 +    config,
 +    productos: productos.map(aProductoStaff),
 +    prefijo: prefijoCodigo(),
 +    secreto_configurado: tiendaSecretoConfigurado(),
++    puede_editar_cobro: isSocio(role),
 +  }
 +}
 +
@@ -1193,7 +1239,9 @@ index 0000000..4ebe7dd
 +  const auth = await requireRolActivo(ROLES)
 +  if (auth.response) return auth.response
 +  try {
-+    return NextResponse.json(await armarRespuesta(tiendaAdmin()), { headers: { 'Cache-Control': 'no-store' } })
++    return NextResponse.json(await armarRespuesta(tiendaAdmin(), auth.user.role), {
++      headers: { 'Cache-Control': 'no-store' },
++    })
 +  } catch (err) {
 +    return errorServidor(err, 'GET /api/tienda/config')
 +  }
@@ -1213,6 +1261,17 @@ index 0000000..4ebe7dd
 +
 +    const config = aplicarPatchConfig(actual, body.config)
 +    if (!config.ok) return NextResponse.json({ error: config.error, campo: config.campo }, { status: 400 })
++
++    // Datos de cobro: solo un socio (requireRolActivo ya exigió perfil activo).
++    // Un encargado que pusiera su propia cuenta se quedaría con las transferencias.
++    const cambiosCobro = camposCobroCambiados(actual, config.data)
++    if (cambiosCobro.length > 0 && !isSocio(user.role)) {
++      return NextResponse.json(
++        { error: MENSAJE_SOLO_SOCIO_COBRO, campo: `config.${cambiosCobro[0]}` },
++        { status: 403 },
++      )
++    }
++
 +    const productos = validarPatchProductos(body.productos, productosActuales)
 +    if (!productos.ok) return NextResponse.json({ error: productos.error, campo: productos.campo }, { status: 400 })
 +
@@ -1234,33 +1293,50 @@ index 0000000..4ebe7dd
 +      if (error) throw error
 +    }
 +
-+    if (configCambio || productos.data.length > 0) {
++    const otrosCambios = cambiaAlgoMasQueCobro(actual, config.data) || productos.data.length > 0
++    if (cambiosCobro.length > 0 || otrosCambios) {
 +      const { data: perfil } = await admin.from('profiles').select('first_name, last_name').eq('id', user.id).maybeSingle()
 +      const p = perfil as { first_name: string | null; last_name: string | null } | null
 +      const userName = `${p?.first_name ?? ''} ${p?.last_name ?? ''}`.trim() || null
-+      const abrio = !actual.venta_habilitada && config.data.venta_habilitada
-+      const cerro = actual.venta_habilitada && !config.data.venta_habilitada
-+      void logAudit(admin, {
++      const base = {
 +        userId: user.id,
 +        userName,
-+        action: 'tienda_config',
 +        module: 'tienda',
 +        entityType: 'app_settings',
 +        entityId: SETTINGS_KEY,
-+        description: abrio
-+          ? 'Activó la venta web'
-+          : cerro
-+            ? 'Pausó la venta web'
-+            : 'Cambió los ajustes de la tienda web',
-+        metadata: {
-+          antes: actual,
-+          despues: config.data,
-+          productos: productos.data,
-+        },
-+      })
++      } as const
++      // Se esperan (no fire-and-forget): el cambio de datos de cobro tiene que
++      // quedar registrado. En la auditoría el CBU va enmascarado.
++      const auditorias: Promise<void>[] = []
++      if (cambiosCobro.length > 0) {
++        auditorias.push(
++          logAudit(admin, { ...base, action: 'tienda_datos_cobro', ...auditoriaCambioCobro(actual, config.data, cambiosCobro) }),
++        )
++      }
++      if (otrosCambios) {
++        const abrio = !actual.venta_habilitada && config.data.venta_habilitada
++        const cerro = actual.venta_habilitada && !config.data.venta_habilitada
++        auditorias.push(
++          logAudit(admin, {
++            ...base,
++            action: 'tienda_config',
++            description: abrio
++              ? 'Activó la venta web'
++              : cerro
++                ? 'Pausó la venta web'
++                : 'Cambió los ajustes de la tienda web',
++            metadata: {
++              antes: configParaAuditoria(actual),
++              despues: configParaAuditoria(config.data),
++              productos: productos.data,
++            },
++          }),
++        )
++      }
++      await Promise.all(auditorias)
 +    }
 +
-+    return NextResponse.json(await armarRespuesta(admin))
++    return NextResponse.json(await armarRespuesta(admin, user.role))
 +  } catch (err) {
 +    return errorServidor(err, 'PATCH /api/tienda/config')
 +  }
@@ -1908,10 +1984,10 @@ index 0000000..e2a0567
 +}
 diff --git a/src/lib/tienda/config.ts b/src/lib/tienda/config.ts
 new file mode 100644
-index 0000000..b7d84c8
+index 0000000..210eee9
 --- /dev/null
 +++ b/src/lib/tienda/config.ts
-@@ -0,0 +1,429 @@
+@@ -0,0 +1,515 @@
 +import type { TiendaDb } from './db'
 +import type {
 +  ConfigPatchBody,
@@ -2266,6 +2342,87 @@ index 0000000..b7d84c8
 +  return { ok: true, data: nueva }
 +}
 +
++/* ------------------------------------------------------------------ */
++/* Datos de cobro: solo los cambia un socio                            */
++/* ------------------------------------------------------------------ */
++// A quién le transfiere el cliente y adónde manda el comprobante. Si un
++// encargado los pudiera cambiar, podría poner su propia cuenta y quedarse con
++// las transferencias. Por eso solo los cambia un socio activo (lo controla
++// PATCH /api/tienda/config) y cada cambio queda en la auditoría.
++
++export const MENSAJE_SOLO_SOCIO_COBRO = 'Solo un socio puede cambiar los datos de cobro'
++
++export type CampoCobro = 'pago.alias' | 'pago.cbu' | 'pago.titular' | 'pago.banco' | 'pago.cuit' | 'whatsapp'
++
++const CAMPOS_COBRO: Record<CampoCobro, { etiqueta: string; leer: (c: TiendaConfig) => string | null }> = {
++  'pago.alias': { etiqueta: 'alias', leer: (c) => c.pago.alias },
++  'pago.cbu': { etiqueta: 'CBU', leer: (c) => c.pago.cbu },
++  'pago.titular': { etiqueta: 'titular', leer: (c) => c.pago.titular },
++  'pago.banco': { etiqueta: 'banco', leer: (c) => c.pago.banco },
++  'pago.cuit': { etiqueta: 'CUIT', leer: (c) => c.pago.cuit },
++  whatsapp: { etiqueta: 'WhatsApp', leer: (c) => c.whatsapp },
++}
++
++/**
++ * Datos de cobro que cambian entre `antes` y `despues`. Compara la config ya
++ * normalizada (la que devuelve aplicarPatchConfig): reenviar los mismos valores
++ * no cuenta como cambio.
++ */
++export function camposCobroCambiados(antes: TiendaConfig, despues: TiendaConfig): CampoCobro[] {
++  return (Object.keys(CAMPOS_COBRO) as CampoCobro[]).filter(
++    (k) => CAMPOS_COBRO[k].leer(antes) !== CAMPOS_COBRO[k].leer(despues),
++  )
++}
++
++/** true si cambia algo que no es dato de cobro: venta, mensaje, retiro u horas de reserva. */
++export function cambiaAlgoMasQueCobro(antes: TiendaConfig, despues: TiendaConfig): boolean {
++  const sinCobro = (c: TiendaConfig) => JSON.stringify({ ...c, pago: null, whatsapp: null })
++  return sinCobro(antes) !== sinCobro(despues)
++}
++
++/** El CBU para la auditoría: solo los últimos 4 dígitos ("****1234"). */
++export function enmascararCbu(cbu: string | null): string | null {
++  if (!cbu) return null
++  return `****${cbu.replace(/\D/g, '').slice(-4)}`
++}
++
++/** La config como se guarda en la auditoría: con el CBU enmascarado. */
++export function configParaAuditoria(c: TiendaConfig): TiendaConfig {
++  return { ...c, pago: { ...c.pago, cbu: enmascararCbu(c.pago.cbu) } }
++}
++
++/**
++ * Descripción y metadata del cambio de datos de cobro para la auditoría. El
++ * alias y el CBU (enmascarado) van siempre, viejos y nuevos; el resto de los
++ * datos de cobro, solo si cambiaron.
++ */
++export function auditoriaCambioCobro(
++  antes: TiendaConfig,
++  despues: TiendaConfig,
++  campos: CampoCobro[],
++): { description: string; metadata: Record<string, unknown> } {
++  const a = configParaAuditoria(antes)
++  const d = configParaAuditoria(despues)
++  const vacio = (v: string | null) => v ?? '(vacío)'
++  const metadata: Record<string, unknown> = {
++    campos,
++    alias: { antes: a.pago.alias, despues: d.pago.alias },
++    cbu: { antes: a.pago.cbu, despues: d.pago.cbu },
++  }
++  const partes: string[] = []
++  for (const k of campos) {
++    if (k === 'pago.alias') {
++      partes.push(`alias ${vacio(a.pago.alias)} → ${vacio(d.pago.alias)}`)
++    } else if (k === 'pago.cbu') {
++      partes.push(`CBU ${vacio(a.pago.cbu)} → ${vacio(d.pago.cbu)}`)
++    } else {
++      partes.push(CAMPOS_COBRO[k].etiqueta)
++      metadata[k.replace('pago.', '')] = { antes: CAMPOS_COBRO[k].leer(antes), despues: CAMPOS_COBRO[k].leer(despues) }
++    }
++  }
++  return { description: `Cambió los datos de cobro de la tienda web: ${partes.join(', ')}`, metadata }
++}
++
 +export type CambioProducto = {
 +  id: string
 +  cambios: Partial<Pick<TiendaProductoRow, 'nombre' | 'descripcion' | 'disponible' | 'max_por_pedido'>> & {
@@ -2273,7 +2430,11 @@ index 0000000..b7d84c8
 +  }
 +}
 +
-+/** Valida los cambios de productos. `actuales` sirve para chequear que existan y el precio final. */
++/**
++ * Valida los cambios de productos. `actuales` sirve para chequear que existan y el precio final.
++ * Devuelve solo lo que cambia de verdad: Ajustes manda todos los productos en cada
++ * guardado, y lo que queda igual no se escribe ni se audita.
++ */
 +export function validarPatchProductos(
 +  patch: unknown,
 +  actuales: TiendaProductoRow[],
@@ -2297,14 +2458,15 @@ index 0000000..b7d84c8
 +      if (typeof precio !== 'number' || !Number.isFinite(precio) || precio < 0 || precio > 10_000_000) {
 +        return { ok: false, error: 'Precio inválido.', campo: `${base}.precio` }
 +      }
-+      cambios.precio = Math.round(precio * 100) / 100
++      const redondeado = Math.round(precio * 100) / 100
++      if (redondeado !== Number(actual.precio)) cambios.precio = redondeado
 +    }
 +
 +    if (p.disponible !== undefined) {
 +      if (typeof p.disponible !== 'boolean') {
 +        return { ok: false, error: 'Tiene que ser sí o no.', campo: `${base}.disponible` }
 +      }
-+      cambios.disponible = p.disponible
++      if (p.disponible !== actual.disponible) cambios.disponible = p.disponible
 +    }
 +
 +    if (p.nombre !== undefined) {
@@ -2312,19 +2474,19 @@ index 0000000..b7d84c8
 +      if (n.length < 2 || n.length > 80) {
 +        return { ok: false, error: 'El nombre va de 2 a 80 caracteres.', campo: `${base}.nombre` }
 +      }
-+      cambios.nombre = n
++      if (n !== actual.nombre) cambios.nombre = n
 +    }
 +
 +    const desc = textoOpcional(p.descripcion, `${base}.descripcion`, 300)
 +    if (!desc.ok) return desc
-+    if (desc.cambia) cambios.descripcion = desc.valor
++    if (desc.cambia && desc.valor !== actual.descripcion) cambios.descripcion = desc.valor
 +
 +    if (p.max_por_pedido !== undefined) {
 +      const m = p.max_por_pedido
 +      if (typeof m !== 'number' || !Number.isInteger(m) || m < 1 || m > 20) {
 +        return { ok: false, error: 'El máximo por pedido va de 1 a 20.', campo: `${base}.max_por_pedido` }
 +      }
-+      cambios.max_por_pedido = m
++      if (m !== actual.max_por_pedido) cambios.max_por_pedido = m
 +    }
 +
 +    const precioFinal = cambios.precio ?? Number(actual.precio)
@@ -2437,10 +2599,10 @@ index 0000000..c7f4f03
 +}
 diff --git a/src/lib/tienda/tipos.ts b/src/lib/tienda/tipos.ts
 new file mode 100644
-index 0000000..14494b2
+index 0000000..3c3517e
 --- /dev/null
 +++ b/src/lib/tienda/tipos.ts
-@@ -0,0 +1,342 @@
+@@ -0,0 +1,344 @@
 +// ---------------------------------------------------------------------------
 +// Tienda web — tipos
 +// ---------------------------------------------------------------------------
@@ -2767,6 +2929,8 @@ index 0000000..14494b2
 +  prefijo: string
 +  /** Si TIENDA_API_SECRET está cargado (nunca se devuelve el valor). */
 +  secreto_configurado: boolean
++  /** Si quien pide puede cambiar los datos de cobro (pago y whatsapp): solo un socio. */
++  puede_editar_cobro: boolean
 +}
 +
 +export type ConfigPatchBody = {

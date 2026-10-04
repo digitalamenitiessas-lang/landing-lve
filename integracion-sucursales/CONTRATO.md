@@ -118,17 +118,25 @@ curl -s https://sala-de-profes-24.vercel.app/api/tienda/publico/catalogo \
 }
 ```
 
-(Los valores son de ejemplo: los datos reales los carga cada sucursal en `/tienda` → Ajustes.)
+(Los valores son de ejemplo: los datos reales los carga cada sucursal en `/tienda` → Ajustes. Los de `pago` y `whatsapp` los cambia solo un socio, y cada cambio queda en la auditoría de la sucursal.)
 
 **Reglas**
 
 | Campo | Regla |
 |---|---|
-| `venta_habilitada` | Interruptor general de la sucursal. Con `false`, la landing muestra el café pero no deja comprar, y el POST responde `409 venta_deshabilitada`. Desde la app no se puede activar sin alias o CBU y sin WhatsApp. |
-| `productos[].disponible` | Es `false` si el producto está apagado, **no tiene precio** (`precio <= 0`; en ese caso sale `precio: 0`) **o tiene opciones mal cargadas** (ver la fila siguiente). |
+| `venta_habilitada` | Interruptor general de la sucursal. Con `false`, la landing muestra el café **sin precio y sin dejar comprar**, con el aviso "La venta web está pausada en esta sucursal", y el POST responde `409 venta_deshabilitada`. Desde la app no se puede activar sin alias o CBU y sin WhatsApp. |
+| `productos[].disponible` | Es `false` si el producto está apagado, **no tiene precio** (`precio <= 0`; en ese caso sale `precio: 0`) **o tiene opciones mal cargadas** (ver la fila siguiente). Con `false`, la landing muestra el café sin precio y sin dejar comprar, con el aviso "Agotado en esta sucursal". |
 | `productos[].opciones` | Se descartan las opciones mal armadas (sin `id`, sin `nombre` o sin `valores`), para que la landing no rechace el catálogo entero. Si hubo que descartar o recortar algo (también un `id` de opción o de valor con espacios de más o de más de 60 caracteres), el producto sale con `disponible: false`: `tienda_crear_venta` valida contra lo guardado y rechazaría lo que mande la landing. |
 | `whatsapp` | Solo dígitos, de 10 a 15, con formato internacional (`549381…`), o `null`. |
 | `vencimiento_horas` | Entero de 1 a 720. Si lo guardado es inválido, vale 48. |
+
+**Qué muestra la landing.** Toma el producto con `slug` `cafe-1-4` (o, si no está, el primero de `productos`). Solo deja comprar si `venta_habilitada` es `true` y ese producto viene con `disponible: true`. Si no, no muestra el precio ni el formulario de compra, y avisa por qué. Se mira en este orden:
+
+| Caso | Aviso en la landing |
+|---|---|
+| `venta_habilitada: false` | "La venta web está pausada en esta sucursal" |
+| El producto viene con `disponible: false` | "Agotado en esta sucursal" |
+| `productos` viene vacío | "Todavía no estamos vendiendo café en esta sucursal" |
 
 ---
 
