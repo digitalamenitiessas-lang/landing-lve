@@ -25,7 +25,7 @@ import {
 
 import { SUCURSALES, esSucursalId, getSucursal, type SucursalId } from "@/config/sucursales";
 import { formatPesos } from "@/lib/formato";
-import { guardarVenta } from "@/lib/mis-pedidos";
+import { guardarVenta, leerPedido } from "@/lib/mis-pedidos";
 import {
   EVENTO_ELEGIR_SUCURSAL,
   rutaTicket,
@@ -413,7 +413,13 @@ export default function FormularioPedido() {
           : rutaTicket(sucursalId, respuesta.venta.codigo, respuesta.token);
       // Así el chip "Tu pedido" aparece aunque el cliente no llegue a abrir el ticket.
       guardarVenta(sucursalId, respuesta.venta, respuesta.token);
-      router.push(destino);
+      // Si el token quedó guardado en el dispositivo, vamos al ticket sin el #t=
+      // en la barra: Next vuelve arriba de la página (con fragmento conserva el
+      // scroll de la landing) y el token no queda a la vista. El link completo
+      // para compartir está en "Copiar link del ticket".
+      const guardado =
+        leerPedido(sucursalId, respuesta.venta.codigo)?.token === respuesta.token;
+      router.push(guardado ? rutaTicket(sucursalId, respuesta.venta.codigo) : destino);
       return; // el botón queda en "Armando tu ticket…" hasta que cambia la página
     }
 

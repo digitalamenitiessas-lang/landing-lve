@@ -111,11 +111,13 @@ body {
     z-index: -1;
   }
 
-  /* Título de afiche: Anton en mayúsculas, apretado */
+  /* Título de afiche: Anton en mayúsculas, apretado. Con menos de ~1.04 de
+     interlineado las tildes de las mayúsculas (CAFÉ, DIRECCIÓN) se pegan a la
+     línea de arriba y, al ser del mismo color, desaparecen. */
   .titulo-afiche {
     font-family: var(--font-display);
     text-transform: uppercase;
-    line-height: 0.92;
+    line-height: 1.04;
     letter-spacing: 0.005em;
   }
 

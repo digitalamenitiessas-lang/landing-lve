@@ -21,9 +21,11 @@ const fechaHora = new Intl.DateTimeFormat("es-AR", {
   month: "long",
   hour: "2-digit",
   minute: "2-digit",
+  // 24 h como se usa en Argentina; además evita el "p. m." que choca con el punto final de una oración
+  hourCycle: "h23",
 });
 
-/** ISO → "lunes 6 de octubre, 18:30" (hora de Tucumán) */
+/** ISO → "lunes, 6 de octubre, 18:30" (hora de Tucumán) */
 export function formatFechaHora(iso: string): string {
   return fechaHora.format(new Date(iso));
 }

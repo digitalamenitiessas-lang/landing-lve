@@ -43,9 +43,16 @@ import { ARTE_ANCHO, BOCA_TAZA } from "./trazos";
  */
 const ENTRADA_HASTA_MS = 2600;
 
-function Palabra({ children }: { children: React.ReactNode }) {
+/**
+ * El texto (kicker, h1, bajada y CTAs) entra con CSS desde el primer pintado,
+ * sin esperar a que hidrate React: es el contenido principal (LCP) y no puede
+ * quedar invisible en un celular lento. GSAP anima solo los dibujos.
+ */
+const retraso = (segundos: number) => ({ "--retraso": `${segundos}s` }) as React.CSSProperties;
+
+function Palabra({ i, children }: { i: number; children: React.ReactNode }) {
   return (
-    <span data-entra="palabra" className="inline-block">
+    <span data-css="palabra" style={retraso(0.18 + i * 0.085)} className="inline-block">
       {children}
     </span>
   );
@@ -85,23 +92,6 @@ export default function Hero() {
               q('[data-entra="sol"]'),
               { autoAlpha: 0, scale: 0.82, rotation: -25, duration: 1.6, ease: "power2.out" },
               0.15,
-            )
-            .fromTo(
-              q('[data-entra="kicker"]'),
-              { autoAlpha: 0, clipPath: "inset(-30% 100% -30% 0%)" },
-              {
-                autoAlpha: 1,
-                clipPath: "inset(-30% 0% -30% 0%)",
-                duration: 0.8,
-                ease: "power2.inOut",
-                clearProps: "clipPath",
-              },
-              0.2,
-            )
-            .from(
-              q('[data-entra="palabra"]'),
-              { autoAlpha: 0, yPercent: 60, rotation: 3, duration: 0.8, stagger: 0.085, ease: "power4.out" },
-              0.3,
             );
 
           // La taza se dibuja: plato → cuerpo → asa → borde → café
@@ -113,14 +103,9 @@ export default function Hero() {
           dibujar("cafe", 1.6, 0.45, 0.06);
           tl.from(q('[data-relleno="cafe"]'), { opacity: 0, duration: 0.6, ease: "power1.out" }, 1.65);
 
-          // Subrayado de "café", bajada y CTAs
-          tl.set(q('[data-entra="subrayado"]'), { autoAlpha: 1 }, 1.1);
-          dibujar("subrayado", 1.1, 0.4, 0.16);
-          tl.from(q('[data-entra="bajada"]'), { autoAlpha: 0, y: 18, duration: 0.7 }, 1.05).from(
-            q('[data-entra="cta"]'),
-            { autoAlpha: 0, y: 16, duration: 0.6, stagger: 0.1 },
-            1.25,
-          );
+          // Subrayado de "café" (el texto ya entró por CSS)
+          tl.set(q('[data-entra="subrayado"]'), { autoAlpha: 1 }, 0.9);
+          dibujar("subrayado", 0.9, 0.4, 0.16);
 
           // Vapor, granos y afiche
           tl.from(q('[data-entra="vapor"]'), { autoAlpha: 0, y: 24, duration: 1.2, ease: "power2.out" }, 1.75)
@@ -257,7 +242,8 @@ export default function Hero() {
         {/* 3. Texto */}
         <div data-scroll="texto" className="relative z-10 max-w-[40rem] lg:max-w-none">
           <p
-            data-entra="kicker"
+            data-css="kicker"
+            style={retraso(0.05)}
             className="a-mano text-[1.2rem] text-sol min-[400px]:text-[1.3rem] sm:text-2xl lg:text-[1.7rem]"
           >
             Neobodegón norteño · San Miguel de Tucumán
@@ -267,31 +253,32 @@ export default function Hero() {
             className="titulo-afiche mt-2 text-[clamp(3.4rem,min(14.6vw,12.5svh),8.5rem)] text-tiza lg:mt-3 lg:text-[clamp(4rem,min(8.4vw,12.5svh),8.5rem)]"
           >
             <span className="block">
-              <Palabra>Buenas</Palabra> <Palabra>costumbres</Palabra>
+              <Palabra i={0}>Buenas</Palabra> <Palabra i={1}>costumbres</Palabra>
             </span>
             <span className="block">
-              <Palabra>y</Palabra> <Palabra>rico</Palabra>{" "}
+              <Palabra i={2}>y</Palabra> <Palabra i={3}>rico</Palabra>{" "}
               <span className="relative inline-block">
-                <Palabra>café.</Palabra>
+                <Palabra i={4}>café.</Palabra>
                 <SubrayadoTiza />
               </span>
             </span>
           </h1>
           <p
-            data-entra="bajada"
+            data-css="bajada"
+            style={retraso(0.6)}
             className="mt-5 max-w-[34ch] text-[1.0625rem] leading-relaxed text-tiza/85 sm:text-lg lg:mt-7 lg:text-xl"
           >
             Llevate a casa el café de La Vieja Escuela: pedí tu 1/4&nbsp;kg en grano o molido,
             transferí y retiralo en tu sucursal.
           </p>
           <div className="mt-6 flex flex-wrap gap-2.5 sm:gap-3 lg:mt-8">
-            {/* GSAP anima el wrapper: .boton tiene transición de transform propia */}
-            <span data-entra="cta" className="inline-flex">
+            {/* Se anima el wrapper: .boton tiene transición de transform propia */}
+            <span data-css="cta" style={retraso(0.75)} className="inline-flex">
               <a href="#cafe" className="boton boton-rojo px-4 text-[0.95rem] sm:px-6 sm:text-base">
                 Pedí tu 1/4 de café
               </a>
             </span>
-            <span data-entra="cta" className="inline-flex">
+            <span data-css="cta" style={retraso(0.85)} className="inline-flex">
               <a
                 href="#sucursales"
                 className="boton boton-tiza px-4 text-[0.95rem] sm:px-6 sm:text-base"
