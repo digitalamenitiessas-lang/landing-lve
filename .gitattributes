@@ -1,0 +1,4 @@
+# Los parches tienen que viajar byte a byte: CRLF los rompe para git apply / git am.
+*.patch -text
+*.sh text eol=lf
+*.sql text eol=lf
