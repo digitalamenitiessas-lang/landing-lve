@@ -1,26 +1,202 @@
 @import "tailwindcss";
 
+/*
+ * La Vieja Escuela — Neobodegón norteño.
+ * Paleta sacada del logo (#005938), los íconos de tiza sobre verde de las
+ * historias destacadas, las mesas rojas, los banderines celestes y el Sol de Mayo.
+ * La landing es de marca: un solo esquema claro (papel + pizarrón).
+ */
+
+@theme {
+  /* Verdes: logo, pizarrón y sus sombras */
+  --color-verde: #005938;
+  --color-verde-claro: #0b7356;
+  --color-pizarra: #0f523f;
+  --color-pizarra-oscura: #0a3a2d;
+  --color-pizarra-noche: #072a21;
+
+  /* Papel de afiche y tintas */
+  --color-papel: #f4ede1;
+  --color-papel-claro: #fbf7ef;
+  --color-papel-oscuro: #e6dccb;
+  --color-tinta: #1e1a15;
+  --color-tinta-suave: #5a5047;
+  --color-tiza: #f5f2ea;
+
+  /* Acentos */
+  --color-rojo: #d6402c;
+  --color-rojo-oscuro: #b23121;
+  --color-celeste: #7db3e3;
+  --color-celeste-claro: #d7e8f7;
+  --color-sol: #f0b429;
+  --color-estano: #a9aaa4;
+  --color-cafe: #6b4428;
+  --color-cafe-oscuro: #3a2416;
+  --color-kraft: #c9a678;
+
+  /* Tipografías (las variables las define next/font en layout.tsx) */
+  --font-display: var(--font-anton), "Arial Narrow", Impact, sans-serif;
+  --font-sans: var(--font-barlow), ui-sans-serif, system-ui, sans-serif;
+  --font-tiza: var(--font-caveat), "Comic Sans MS", cursive;
+
+  --ease-tiza: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  color-scheme: light;
+  --grano: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 .55 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 5rem;
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-papel);
+  color: var(--color-tinta);
+  font-family: var(--font-sans);
+  overflow-x: clip;
+}
+
+::selection {
+  background: var(--color-sol);
+  color: var(--color-tinta);
+}
+
+:focus-visible {
+  outline: 3px solid var(--color-sol);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+@layer components {
+  /* Pizarrón: verde profundo con viñeta y polvo de tiza */
+  .pizarra {
+    background-color: var(--color-pizarra);
+    background-image:
+      radial-gradient(120% 90% at 50% 40%, transparent 40%, rgb(0 0 0 / 0.35) 100%),
+      radial-gradient(60% 40% at 25% 30%, rgb(255 255 255 / 0.05), transparent 70%),
+      radial-gradient(50% 35% at 75% 70%, rgb(255 255 255 / 0.04), transparent 70%);
+    color: var(--color-tiza);
+    position: relative;
+    isolation: isolate;
+  }
+  .pizarra::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: var(--grano);
+    opacity: 0.18;
+    mix-blend-mode: soft-light;
+    pointer-events: none;
+    z-index: -1;
+  }
+
+  /* Papel de afiche con grano */
+  .papel {
+    background-color: var(--color-papel);
+    position: relative;
+    isolation: isolate;
+  }
+  .papel::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: var(--grano);
+    opacity: 0.09;
+    mix-blend-mode: multiply;
+    pointer-events: none;
+    z-index: -1;
+  }
+
+  /* Título de afiche: Anton en mayúsculas, apretado */
+  .titulo-afiche {
+    font-family: var(--font-display);
+    text-transform: uppercase;
+    line-height: 0.92;
+    letter-spacing: 0.005em;
+  }
+
+  /* Nota escrita a mano con tiza o birome */
+  .a-mano {
+    font-family: var(--font-tiza);
+    font-weight: 600;
+    line-height: 1.1;
+  }
+
+  /* Botones */
+  .boton {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    min-height: 3rem;
+    padding: 0.75rem 1.4rem;
+    border-radius: 999px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    transition:
+      transform 0.2s var(--ease-tiza),
+      background-color 0.2s,
+      box-shadow 0.2s,
+      color 0.2s;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .boton:active {
+    transform: translateY(1px) scale(0.98);
+  }
+  .boton:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+  .boton-rojo {
+    background: var(--color-rojo);
+    color: #fff;
+    box-shadow: 0 4px 0 var(--color-rojo-oscuro);
+  }
+  .boton-rojo:hover:not(:disabled) {
+    background: #df4a35;
+    transform: translateY(-1px);
+    box-shadow: 0 5px 0 var(--color-rojo-oscuro);
+  }
+  .boton-verde {
+    background: var(--color-verde);
+    color: #fff;
+    box-shadow: 0 4px 0 var(--color-pizarra-noche);
+  }
+  .boton-verde:hover:not(:disabled) {
+    background: var(--color-verde-claro);
+    transform: translateY(-1px);
+  }
+  .boton-tiza {
+    border: 2px solid rgb(245 242 234 / 0.7);
+    color: var(--color-tiza);
+  }
+  .boton-tiza:hover {
+    background: rgb(245 242 234 / 0.1);
+    border-color: var(--color-tiza);
+  }
+  .boton-tinta {
+    border: 2px solid var(--color-tinta);
+    color: var(--color-tinta);
+  }
+  .boton-tinta:hover {
+    background: var(--color-tinta);
+    color: var(--color-papel);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

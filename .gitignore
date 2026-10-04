@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+!.env.example
+
+# scratch de verificación del kit de integración
+integracion-sucursales/.tmp/
