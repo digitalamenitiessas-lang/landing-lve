@@ -1,4 +1,4 @@
-From f066411e52bbc9cf50207b04f9a053f902f62a56 Mon Sep 17 00:00:00 2001
+From cda69c07124d9a259defb4402277e485004b2298 Mon Sep 17 00:00:00 2001
 From: luciano bonilla <lucianobonilla27@gmail.com>
 Date: Sun, 4 Oct 2026 12:41:52 -0300
 Subject: [PATCH] =?UTF-8?q?feat(tienda):=20venta=20de=20caf=C3=A9=20desde?=
@@ -1773,10 +1773,10 @@ index 0000000..ac9da2f
 +  }
 +}
 diff --git a/src/components/layout/BottomNav.tsx b/src/components/layout/BottomNav.tsx
-index 5c1df7c..8ef16e9 100644
+index 64ae91f..ba37eb6 100644
 --- a/src/components/layout/BottomNav.tsx
 +++ b/src/components/layout/BottomNav.tsx
-@@ -30,6 +30,7 @@ import {
+@@ -31,6 +31,7 @@ import {
    ScanFace,
    Sparkles,
    Wifi,
@@ -1784,24 +1784,24 @@ index 5c1df7c..8ef16e9 100644
  } from 'lucide-react'
  import type { LucideIcon } from 'lucide-react'
  import type { AppRole } from '@/types/database'
-@@ -122,6 +123,7 @@ const SOCIO_MORE: ExpandableNavItem = {
+@@ -123,6 +124,7 @@ const SOCIO_MORE: ExpandableNavItem = {
        label: 'Operación',
        items: [
          { label: 'Ventas', href: '/ventas', icon: BarChart3, description: 'Facturación y tickets sincronizados desde Fudo' },
 +        { label: 'Tienda web', href: '/tienda', icon: ShoppingBag, description: 'Ventas de la web: cobrar y entregar' },
          { label: 'Reportes', href: '/admin/reportes', icon: BookOpen, description: 'Food cost, márgenes y ventas por período' },
-         { label: 'Protocolos', href: '/protocolos', icon: Sparkles, description: 'Limpieza del baño: asignar, foto y registro' },
-         { label: 'Salón', href: '/salon', icon: Armchair, description: 'Tareas y control del servicio' },
-@@ -159,6 +161,7 @@ const ENCARGADO_MORE: ExpandableNavItem = {
+         { label: 'Protocolos', href: '/protocolos', icon: Sparkles, description: 'Baño, tolva y descartables: asignar, foto y registro' },
+         { label: 'Descartables', href: '/stock/descartables', icon: Package, description: 'Vasos y tapas que se descuentan solos al vender para llevar' },
+@@ -162,6 +164,7 @@ const ENCARGADO_MORE: ExpandableNavItem = {
      {
        label: 'Operación',
        items: [
 +        { label: 'Tienda web', href: '/tienda', icon: ShoppingBag, description: 'Ventas de la web: cobrar y entregar' },
          { label: 'Reportes', href: '/admin/reportes', icon: BookOpen, description: 'Food cost, márgenes y ventas por período' },
-         { label: 'Protocolos', href: '/protocolos', icon: Sparkles, description: 'Limpieza del baño: asignar, foto y registro' },
-         { label: 'Salón', href: '/salon', icon: Armchair, description: 'Servicio y tareas del salón' },
-@@ -232,6 +235,7 @@ const BARISTA_MORE: ExpandableNavItem = {
-       items: [
+         { label: 'Protocolos', href: '/protocolos', icon: Sparkles, description: 'Baño, tolva y descartables: asignar, foto y registro' },
+         { label: 'Descartables', href: '/stock/descartables', icon: Package, description: 'Vasos y tapas que se descuentan solos al vender para llevar' },
+@@ -247,6 +250,7 @@ const BARISTA_MORE: ExpandableNavItem = {
+         { label: 'Descartables', href: '/stock?area=descartables', icon: Package, description: 'Contar vasos y tapas · avisar faltantes' },
          { label: 'Horarios', href: '/mis-horarios', icon: Calendar, description: 'Mis turnos y con quién trabajo' },
          { label: 'Vajilla', href: '/vajilla', icon: Wine, description: 'Controlar roturas y faltantes' },
 +        { label: 'Tienda web', href: '/tienda', icon: ShoppingBag, description: 'Ventas de la web: cobrar y entregar' },
@@ -1834,10 +1834,10 @@ index b16381c..2f3ada4 100644
    entityId?: string
    description: string
 diff --git a/src/lib/push/notify-event.ts b/src/lib/push/notify-event.ts
-index 6c4fb3a..ca6674b 100644
+index 9940ccb..4446386 100644
 --- a/src/lib/push/notify-event.ts
 +++ b/src/lib/push/notify-event.ts
-@@ -97,6 +97,13 @@ export const DEFAULT_NOTIFICATION_EVENTS: Record<string, NotificationEventConfig
+@@ -111,6 +111,13 @@ export const DEFAULT_NOTIFICATION_EVENTS: Record<string, NotificationEventConfig
      target_roles: ['socio', 'encargado', 'chef', 'barista', 'runner', 'cocina', 'bacha'],
      target_user_ids: [],
    },

@@ -35,7 +35,7 @@ La tienda arranca **apagada**: sin precio, sin stock y con la venta pausada. Has
 
 | Ruta | Qué es |
 |---|---|
-| `parches/sala-de-profes-LVE.patch` | Parche para `sala-de-profes-LVE`, hecho sobre `93eb332`. |
+| `parches/sala-de-profes-LVE.patch` | Parche para `sala-de-profes-LVE`, hecho sobre `2cb4da4`. |
 | `parches/sala-de-profes-24.patch` | Parche para `sala-de-profes-24`, hecho sobre `8f5a0cb`. |
 | `sql/20261004_tienda_web.sql` | La migración. Es la misma para las dos sucursales y ya viene adentro del parche. |
 | `sql/opcional_cron_vencimientos.sql` | Job de pg_cron que vence los pedidos sin pagar cada hora. Es opcional. |
