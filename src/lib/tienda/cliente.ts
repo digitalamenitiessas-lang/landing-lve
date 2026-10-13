@@ -202,10 +202,30 @@ export function invalidarCatalogo(sucursal: SucursalId): void {
   c.entradas.delete(`real:${sucursal}`);
 }
 
+function catalogoSinTienda(): Catalogo {
+  return {
+    version: CONTRATO_VERSION,
+    venta_habilitada: true,
+    mensaje: null,
+    productos: [],
+    pago: { alias: null, cbu: null, titular: null, banco: null, cuit: null },
+    whatsapp: null,
+    retiro: { direccion: null, horario: null, indicaciones: null },
+    vencimiento_horas: 48,
+  };
+}
+
 export async function obtenerCatalogo(
   sucursal: SucursalId,
   opts: { origen: string },
 ): Promise<ResultadoSucursal<Catalogo>> {
+  // Sucursal todavía sin conectar (faltan URL o secreto en el entorno): no es una
+  // falla, es que ahí no se vende online. Un catálogo sin productos hace que el
+  // formulario muestre "Todavía no estamos vendiendo café en esta sucursal".
+  if (!resolverDestino(sucursal, opts.origen)) {
+    return { ok: true, status: 200, data: catalogoSinTienda() };
+  }
+
   const c = cacheCatalogo();
   const clave = claveCatalogo(sucursal);
   const ahora = Date.now();

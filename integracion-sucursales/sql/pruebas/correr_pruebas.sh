@@ -5,7 +5,7 @@
 # No se conecta a ninguna base real. Al final borra el contenedor.
 #
 # Uso (Git Bash / Linux / macOS, con Docker andando):
-#   SALA_REPO=/c/repos/sala-de-profes-24 ./correr_pruebas.sh
+#   SALA_REPO=../ruta/a/sala-de-profes-24 ./correr_pruebas.sh
 # SALA_REPO es un repo de Sala de Profes: se LEE su supabase/estructura/
 # (01_permisos_previos.sql, 02_estructura_desde_lve.sql, 03_ajustes_sucursal_24.sql).
 # ---------------------------------------------------------------------------

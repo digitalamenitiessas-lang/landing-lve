@@ -8,7 +8,7 @@ No tocan ninguna base real.
 
 ```bash
 cd integracion-sucursales/sql/pruebas
-SALA_REPO=/c/repos/sala-de-profes-24 bash correr_pruebas.sh
+SALA_REPO=../ruta/a/sala-de-profes-24 bash correr_pruebas.sh
 ```
 
 `correr_pruebas.sh`:

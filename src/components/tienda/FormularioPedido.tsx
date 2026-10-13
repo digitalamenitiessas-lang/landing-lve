@@ -23,7 +23,13 @@ import {
   type ReactNode,
 } from "react";
 
-import { SUCURSALES, esSucursalId, getSucursal, type SucursalId } from "@/config/sucursales";
+import {
+  INSTAGRAM_URL,
+  SUCURSALES,
+  esSucursalId,
+  getSucursal,
+  type SucursalId,
+} from "@/config/sucursales";
 import { formatPesos } from "@/lib/formato";
 import { guardarVenta, leerPedido } from "@/lib/mis-pedidos";
 import {
@@ -982,6 +988,21 @@ export default function FormularioPedido() {
                 comprobante.
               </>
             )}
+          </p>
+          {/* Ley 25.326: para qué se piden los datos, quién los guarda y cómo pedir que se borren */}
+          <p id={f("privacidad")} className="mt-3 text-sm text-tinta-suave">
+            Usamos tu nombre, tu teléfono y tu email (si lo dejás) solo para gestionar este pedido. Los
+            guarda La Vieja Escuela en el sistema de la sucursal que elegiste y no se los pasamos a
+            nadie. Para consultarlos, corregirlos o pedir que los borremos, escribinos por{" "}
+            <a
+              href={INSTAGRAM_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-semibold text-verde underline underline-offset-2"
+            >
+              Instagram
+            </a>
+            .
           </p>
         </div>
       </div>
