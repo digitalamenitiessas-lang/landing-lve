@@ -45,7 +45,9 @@ MSYS_NO_PATHCONV=1 docker run --rm -v "$TMP_DOCKER:/app" -w /app \
   -e NEXT_PUBLIC_MEMBRESIAS_URL="${NEXT_PUBLIC_MEMBRESIAS_URL:-}" \
   node:22-bookworm-slim bash -c '
     set -e
-    npm ci --no-audit --no-fund --loglevel=error
+    # Misma versión de npm que generó package-lock.json (con npm 10 el lock
+    # armado en Windows no cierra por las dependencias opcionales de Linux).
+    npx --yes npm@11.6.2 ci --no-audit --no-fund --loglevel=error
     npx next build
     PAQ=.next/standalone
     cp -r public "$PAQ/"
