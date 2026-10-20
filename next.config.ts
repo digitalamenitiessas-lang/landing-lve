@@ -11,6 +11,9 @@ const seguridad = [
 ];
 
 const nextConfig: NextConfig = {
+  // En la VPS corre solo `node server.js` (sin npm install ni build: 1 núcleo).
+  // scripts/deploy-vps.sh compila acá y sube .next/standalone.
+  output: "standalone",
   poweredByHeader: false,
   async headers() {
     return [
