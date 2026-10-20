@@ -55,6 +55,8 @@ MSYS_NO_PATHCONV=1 docker run --rm -v "$TMP_DOCKER:/app" -w /app \
     cp -r .next/static "$PAQ/.next/"
     find "$PAQ" -maxdepth 1 -name ".env*" -delete
     tar -czf /app/paquete.tgz -C "$PAQ" .
+    # Lo que crea el contenedor queda con dueño root: se borra desde adentro.
+    rm -rf node_modules .next
   '
 mv "$TMP/paquete.tgz" "/tmp/landinglve-$VERSION.tgz"
 
